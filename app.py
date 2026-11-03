@@ -9,6 +9,7 @@ Env:  PORT (8000), HOST (127.0.0.1), DB_PATH (./data.db),
 import json
 import os
 import secrets
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,7 +29,7 @@ for _q in CONFIG["races"]:
         ]
     _q["min_confidence"] = min_confidence(len(_q["candidates"]))
 RACES = {r["id"]: r for r in CONFIG["races"]}
-# Each question locks when its polls close; changes after that are ignored (the earlier pick stands).
+# Each question's on-time deadline is when its polls close. Later changes are saved but marked late.
 LOCKS = {r["id"]: datetime.fromisoformat(r.get("locks_at", CONFIG["closes_at"])) for r in CONFIG["races"]}
 LOCKS["SEATS"] = datetime.fromisoformat(CONFIG["seats"].get("locks_at", CONFIG["closes_at"]))
 OPTIONS = {r["id"]: [c["id"] for c in r["candidates"]] for r in CONFIG["races"]}
@@ -65,6 +66,12 @@ def db():
 
 
 def init_db():
+    # On a fresh server volume, start from seed.db (a snapshot of the local data.db) if one was shipped.
+    db_file, seed = Path(DB_PATH), ROOT / "seed.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    if not db_file.exists() and seed.exists():
+        shutil.copyfile(seed, db_file)
+        print(f"Seeded {db_file} from {seed}")
     with db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS entries (
@@ -182,29 +189,8 @@ def clean_margins(raw):
     return out or None
 
 
-def locked(qid):
-    return now() >= LOCKS[qid]
-
-
-def keep_locked(preds, seats, margins, old_preds=None, old_seats=None, old_margins=None):
-    """Drop changes to questions whose polls have closed, keeping whatever was saved before the lock."""
-    old_preds, old_margins = old_preds or {}, old_margins or {}
-    for qid in set(preds) | set(old_preds):
-        if locked(qid):
-            if qid in old_preds:
-                preds[qid] = old_preds[qid]
-            else:
-                preds.pop(qid, None)
-    if locked("SEATS"):
-        seats = old_seats
-    margins = dict(margins or {})
-    for rid in set(margins) | set(old_margins):
-        if locked(rid):
-            if rid in old_margins:
-                margins[rid] = old_margins[rid]
-            else:
-                margins.pop(rid, None)
-    return preds, seats, (margins or None)
+def late_for(qid, ts):
+    return datetime.fromisoformat(ts) >= LOCKS[qid]
 
 
 def require_open():
@@ -242,7 +228,6 @@ def create_entry(body):
     preds = clean_predictions(body.get("predictions", {}))
     seats = clean_seats(body.get("seats"))
     margins = clean_margins(body.get("margins"))
-    preds, seats, margins = keep_locked(preds, seats, margins)
     token = secrets.token_urlsafe(16)
     ts = now().isoformat()
     try:
@@ -292,9 +277,6 @@ def update_entry(token, body):
     try:
         with db() as conn:
             row = load_entry(conn, token)
-            preds, seats, margins = keep_locked(
-                preds, seats, margins, json.loads(row["predictions"]),
-                json.loads(row["seats"] or "null"), json.loads(row["margins"] or "null"))
             ts = now().isoformat()
             conn.execute(
                 "UPDATE entries SET name = ?, predictions = ?, seats = ?, margins = ?, updated_at = ? WHERE token = ?",
@@ -335,36 +317,62 @@ def leaderboard():
         results = get_results(conn)
         seat_result = get_seat_result(conn)
         margin_results = get_margin_results(conn)
+    by_entry = {}
+    for v in versions:
+        by_entry.setdefault(v["entry_id"], []).append(v)
+
+    def snapshots(r):
+        """(on-time, latest) picks. On-time = for each question, its value in the last save
+        before that question's deadline; latest = the current row."""
+        hist = by_entry.get(r["id"]) or [{**dict(r), "saved_at": r["updated_at"]}]
+        load = lambda v: (json.loads(v["predictions"]), json.loads(v["seats"] or "null"),
+                          json.loads(v["margins"] or "null") or {})
+        def as_of(qid):
+            ok = [v for v in hist if not late_for(qid, v["saved_at"])]
+            return load(ok[-1]) if ok else ({}, None, {})
+        cur_p, cur_s, cur_m = load(r)
+        on_p, on_m, late = {}, {}, []
+        for q in CONFIG["races"]:
+            qid = q["id"]
+            vp, _, vm = as_of(qid)
+            if qid in vp:
+                on_p[qid] = vp[qid]
+            if vp.get(qid) != cur_p.get(qid):
+                late.append(qid)
+            if qid in MARGIN_RACES:
+                if qid in vm:
+                    on_m[qid] = vm[qid]
+                if vm.get(qid) != cur_m.get(qid) and qid not in late:
+                    late.append(qid)
+        _, on_s, _ = as_of("SEATS")
+        if on_s != cur_s:
+            late.append("SEATS")
+        return (on_p, on_s, on_m or None), (cur_p, cur_s, cur_m or None), late
+
     if not is_closed():
-        # Keep everyone's picks private until the pool locks.
-        out = {"closed": False, "entrants": [r["name"] for r in rows],
-               "late": [r["name"] for r in rows if is_late(r["updated_at"])]}
+        # Keep everyone's picks private until the pool closes.
+        late_names = [r["name"] for r in rows if snapshots(r)[2]]
+        out = {"closed": False, "entrants": [r["name"] for r in rows], "late": late_names}
         if CONFIG.get("crowd_preview", True):
             out["crowd"] = crowd_summary(rows)
         return out
-    def build(name, snap, saved_at):
-        preds = json.loads(snap["predictions"])
-        seats = json.loads(snap["seats"] or "null")
-        margins = json.loads(snap["margins"] or "null")
+
+    def build(name, snap, late, saved_at):
+        preds, seats, margins = snap
         return {
-            "name": name, "predictions": preds, "seats": seats, "saved_at": saved_at, "late": is_late(saved_at),
+            "name": name, "predictions": preds, "seats": seats, "saved_at": saved_at,
+            "late": bool(late), "late_questions": late,
             "seat_error": seat_error(seats, seat_result),
             "margins": margins,
             "margin_stats": margin_stats(margins, margin_results, MARGIN_RACES) if margins else None,
             **score_entry(preds, results, OPTIONS, seats, seat_result),
         }
 
-    by_entry = {}
-    for v in versions:
-        by_entry.setdefault(v["entry_id"], []).append(v)
     latest, on_time = [], []
     for r in rows:
-        latest.append(build(r["name"], r, r["updated_at"]))
-        # Last version saved before the on-time deadline (entries saved before history existed count as-is).
-        hist = by_entry.get(r["id"]) or [{**dict(r), "saved_at": r["updated_at"]}]
-        ok = [v for v in hist if not is_late(v["saved_at"])]
-        if ok:
-            on_time.append(build(r["name"], ok[-1], ok[-1]["saved_at"]))
+        on, cur, late = snapshots(r)
+        on_time.append(build(r["name"], on, [], r["updated_at"]))
+        latest.append(build(r["name"], cur, late, r["updated_at"]))
     # Default order is log score with Brier tiebreak; the page can re-sort by Brier.
     key = lambda e: (-e["total"], e["brier"] if e["brier"] is not None else 1, e["name"].lower())
     latest.sort(key=key)

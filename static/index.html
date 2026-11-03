@@ -115,8 +115,8 @@
           border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
   .lock-note { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
   .mhead .lock-note { margin: 0; }
-  .locked { opacity: 0.55; }
-  .locked .lock-note { font-weight: 600; }
+  .lock-note.past { color: var(--Y); font-weight: 600; }
+  .late-mark { font-size: 9px; color: var(--Y); font-weight: 700; margin-left: 2px; }
   .how p, .how li { color: var(--muted); max-width: 680px; }
   [hidden] { display: none !important; }
 </style>
@@ -192,11 +192,13 @@
           Exact: +0.99 · 1 off: +0.49 · 2 off: 0 · 4 off: −1.0. Leaving it blank counts as 2 off.</li>
       <li>Each rule breaks ties for the other. Skipped questions count as a pure guess.</li>
       <li><b>Bonus: vote share</b> has its own leaderboard and doesn't affect the main score. For each Senate race you predict
-          each side's share of the two-way vote, and you're ranked by total percentage points off. Races you don't set count as 50–50.
+          each side's share of the two-way vote. You're ranked by your average points off across the called races you set, and races you skip don't count.
+          You need at least 5 of the called races, or all of them while fewer than 5 have been called.
           <i>Lean</i> is your average miss toward one party (did you expect a bigger blue wave than happened?), and
           <i>noise</i> is how scattered your misses are around that lean.</li>
-      <li><b>Deadlines:</b> each question locks when the first polls close in that state (national questions lock at the first 7pm ET closings).
-          After that you can't change it, and whatever you saved before the lock counts. The leaderboard is revealed once the last polls close. Every save is timestamped.</li>
+      <li><b>Deadlines:</b> each question is due when the first polls close in that state. National questions are due at the first 7pm ET closings.
+          You can still change a pick after its deadline, but the change is marked late. By default the leaderboard uses the last pick you saved before each deadline,
+          and you can switch it to include late changes. Every save is timestamped. The leaderboard is revealed once the last polls close.</li>
       <li>Nobody can see anyone else's picks until predictions close.</li>
     </ul>
   </section>
@@ -260,8 +262,8 @@ function renderStatus() {
   const next = config.races.map((r) => new Date(r.locks_at)).filter((t) => t > Date.now()).sort((a, b) => a - b)[0];
   const nextQs = next ? config.races.filter((r) => +new Date(r.locks_at) === +next).map((r) => r.state) : [];
   const nextWhen = next ? next.toLocaleString([], { timeStyle: "short" }) : "";
-  $("#status").innerHTML = `Each question locks when its polls close. ` +
-    (next ? `Next to lock: <b>${esc(nextQs.join(", "))}</b> at <b>${esc(nextWhen)}</b>. ` : "") +
+  $("#status").innerHTML = `Each question's deadline is when its polls close. You can still change it after that, but the change is marked late. ` +
+    (next ? `Next deadline: <b>${esc(nextQs.join(", "))}</b> at <b>${esc(nextWhen)}</b>. ` : "") +
     `The leaderboard is revealed after the last polls close, ${esc(when)} (${left} left). Share this page's link to invite people.`;
   applyLocks();
 }
@@ -273,29 +275,18 @@ const isMulti = (r) => r.candidates.length > 2;
 const isLocked = (t) => t && Date.now() >= new Date(t);
 const lockTime = (t) => new Date(t).toLocaleString([], { timeStyle: "short" });
 
-// Grey out and disable anything whose polls have closed (the server ignores changes to it anyway).
+// Label each question with its deadline; after it passes, changes are still allowed but count as late.
 function applyLocks() {
-  for (const card of document.querySelectorAll(".race[data-race]")) {
-    const r = raceById(card.dataset.race), lock = isLocked(r.locks_at);
-    if (card.dataset.locked === String(lock)) continue;
-    card.dataset.locked = String(lock);
-    card.classList.toggle("locked", lock);
-    card.querySelectorAll("input, select, button").forEach((i) => (i.disabled = lock || (i.type === "range" && !getPick(card))));
-    card.querySelector(".lock-note").textContent = lock ? `Polls closed, so this is locked` : `Locks at ${lockTime(r.locks_at)}`;
-  }
-  const seatLock = isLocked(config.seats.locks_at), sc = $("#seats-card");
-  if (sc) {
-    sc.classList.toggle("locked", seatLock);
-    sc.querySelectorAll("input").forEach((i) => (i.disabled = seatLock));
-    const n = sc.querySelector(".lock-note");
-    if (n) n.textContent = seatLock ? "Polls closed, so this is locked" : `Locks at ${lockTime(config.seats.locks_at)}`;
-  }
-  for (const row of document.querySelectorAll(".mrow")) {
-    const r = raceById(row.dataset.mrace), lock = isLocked(r.locks_at);
-    row.classList.toggle("locked", lock);
-    row.querySelectorAll("input, button").forEach((i) => (i.disabled = lock));
-    row.querySelector(".lock-note").textContent = lock ? "Locked" : `Locks ${lockTime(r.locks_at)}`;
-  }
+  const label = (el, t, short) => {
+    if (!el) return;
+    const past = isLocked(t);
+    el.classList.toggle("past", past);
+    el.textContent = past ? (short ? "Late now" : "Polls closed: changes now are marked late")
+                          : (short ? `Due ${lockTime(t)}` : `Due by ${lockTime(t)} (polls close)`);
+  };
+  for (const card of document.querySelectorAll(".race[data-race]")) label(card.querySelector(".lock-note"), raceById(card.dataset.race).locks_at);
+  label($("#seats-card .lock-note"), config.seats.locks_at);
+  for (const row of document.querySelectorAll(".mrow")) label(row.querySelector(".lock-note"), raceById(row.dataset.mrace).locks_at, true);
 }
 const minPct = (r) => Math.round(r.min_confidence * 100);
 
@@ -367,7 +358,7 @@ function renderForm() {
     const clear = card.querySelector(".clear");
     const update = () => {
       const pick = getPick(card);
-      range.disabled = !pick || isLocked(race.locks_at);
+      range.disabled = !pick;
       clear.hidden = !pick;
       if (!pick) { label.textContent = isMulti(race) ? "No pick (counts as a random guess)" : "No pick (counts as 50/50)"; return; }
       const c = candById(race, pick);
@@ -375,8 +366,8 @@ function renderForm() {
       const pct = `<b>${range.value}%</b>`;
       label.innerHTML = Number(range.value) === minPct(race)
         ? (isMulti(race) ? `${range.value}%: no better than a random guess` : "50%: toss-up")
-        : race.verb ? `${pct} that ${who} ${esc(race.verb)}`
-        : c.party ? `${pct} that ${who} wins` : `${pct} on ${who}`;
+        : race.verb ? `${pct} confident that ${who} ${esc(race.verb)}`
+        : c.party ? `${pct} confident that ${who} wins` : `${pct} confident in ${who}`;
     };
     card.addEventListener("input", update);
     card.addEventListener("change", update);
@@ -429,7 +420,7 @@ function showSaved(entry) {
   $("#form-msg").innerHTML = `
     <div class="notice">
       <b>Saved.</b> ${Object.keys(entry.predictions).length} of ${config.races.length} questions answered${entry.seats ? "" : ", seat count left blank"}.
-      ${Date.now() >= new Date(config.on_time_until) ? "<b>This save is after the on-time deadline, so it's marked late.</b> Your last on-time save still counts in the default ranking." : ""}
+      ${config.races.some((r) => isLocked(r.locks_at)) ? "Questions past their deadline keep your earlier pick in the default ranking. Any change you just made to them is marked late." : ""}
       Bookmark your private edit link to change your picks before close:
       <div class="row" style="margin:8px 0 0">
         <span class="link">${esc(link)}</span>
@@ -483,7 +474,7 @@ function lateToggle() {
         <button type="button" data-late="0" aria-pressed="${!includeLate}">On time only</button>
         <button type="button" data-late="1" aria-pressed="${includeLate}">Include late (${nLate})</button>
       </div>
-      <span class="muted">${includeLate ? "Using everyone's latest save. Late rows are flagged." : "Using each person's last save before the on-time deadline."}</span>
+      <span class="muted">${includeLate ? "Using everyone's latest picks. Changes made after a deadline are marked late." : "For each question, using the last pick saved before its polls closed."}</span>
     </div>`;
 }
 function wireLateToggle(root) {
@@ -540,9 +531,10 @@ function renderBoard() {
       const cls = s ? (s.score > 0 ? "hit" : s.score < 0 ? "miss" : "") : "";
       if (!p) return `<td class="cell ${cls}">·</td>`;
       const c = candById(r, p.pick);
-      const tip = s ? `${fmt(s.score)} log · ${s.brier.toFixed(3)} Brier` : "not called yet";
+      const lateQ = includeLate && (e.late_questions || []).includes(r.id);
+      const tip = (s ? `${fmt(s.score)} log · ${s.brier.toFixed(3)} Brier` : "not called yet") + (lateQ ? " · changed after deadline" : "");
       return `<td class="cell ${cls}" title="${esc(c.name)}: ${tip}">
-        <span class="p-${esc(colorOf(c))}">${esc(c.short || c.party)}</span> ${Math.round(p.confidence * 100)}</td>`;
+        <span class="p-${esc(colorOf(c))}">${esc(c.short || c.party)}</span> ${Math.round(p.confidence * 100)}${lateQ ? `<sup class="late-mark">late</sup>` : ""}</td>`;
     }).join("");
     const ss = e.per_race.SEATS;
     const seatCls = ss ? (ss.score > 0 ? "hit" : ss.score < 0 ? "miss" : "") : "";
@@ -779,13 +771,13 @@ function marginStats(people, races, actual, consensus) {
   const useActual = called.length > 0;
   return people.map((p) => {
     const errs = useActual
-      ? called.map((r) => (p.margins[r.id] ?? 50) - actual[r.id])
+      ? called.filter((r) => p.margins[r.id] != null).map((r) => p.margins[r.id] - actual[r.id])
       : races.filter((r) => p.margins[r.id] != null && r.id in consensus).map((r) => p.margins[r.id] - consensus[r.id]);
     const n = errs.length, net = errs.reduce((a, e) => a + e, 0), lean = n ? net / n : 0;
     return {
       name: p.name, margins: p.margins, n, lean, net, score: p.total, late: p.late,
       noise: n ? Math.sqrt(errs.reduce((a, e) => a + (e - lean) ** 2, 0) / n) : 0,
-      off: errs.reduce((a, e) => a + Math.abs(e), 0),
+      off: n ? errs.reduce((a, e) => a + Math.abs(e), 0) / n : 0,
     };
   });
 }
@@ -858,8 +850,10 @@ function renderMarginBoard() {
   });
   const nCalled = races.filter((r) => r.id in actual).length;
   const useActual = nCalled > 0;
+  const need = Math.min(5, nCalled); // races a person must have set (among called ones) to be ranked
   const stats = marginStats(people, races, actual, consensus)
-    .sort((a, b) => (useActual ? a.off - b.off : 0) || a.name.localeCompare(b.name));
+    .map((s) => ({ ...s, ranked: !useActual || s.n >= need }))
+    .sort((a, b) => (useActual ? (b.ranked - a.ranked) || a.off - b.off : 0) || a.name.localeCompare(b.name));
   const W = chartWidth(el);
   const refLabel = useActual ? "the results" : "the group";
 
@@ -868,8 +862,9 @@ function renderMarginBoard() {
     const key = s.off.toFixed(3);
     if (key !== prev) rank = i + 1;
     prev = key;
+    const rankCell = s.ranked ? rank : `<span class="muted" title="Set fewer than ${need} of the called races">–</span>`;
     const cells = races.map((r) => `<td class="cell">${s.margins[r.id] == null ? "·" : s.margins[r.id].toFixed(1)}</td>`).join("");
-    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rank}</td>` : ""}<td>${esc(s.name)}${s.late ? ` <span class="late">late</span>` : ""}</td>
+    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rankCell}</td>` : ""}<td>${esc(s.name)}${s.late ? ` <span class="late">late</span>` : ""}</td>
       ${useActual ? `<td class="num"><b>${s.off.toFixed(1)}</b></td>` : ""}
       <td class="num">${leanText(s.lean)}</td><td class="num">${s.noise.toFixed(1)}</td>${cells}</tr>`;
   }).join("");
@@ -887,7 +882,7 @@ function renderMarginBoard() {
 
   el.innerHTML = `
     <p>${useActual
-      ? `${nCalled} of ${races.length} races have final vote shares. Ranked by total points off; lower is better.`
+      ? `${nCalled} of ${races.length} races have final vote shares. Ranked by average points off across the races each person set (lower is better, and you need ${need}+ called races to be ranked).`
       : "No vote shares entered yet. Until results come in, everyone is measured against the group median."}
       Shares are the D (or Osborn) candidate's percentage of the two-way vote.</p>
     <div class="chart">
@@ -901,7 +896,7 @@ function renderMarginBoard() {
       ${stripSVG(stripRows, W, { ...shareDomain(all), leftLabel: "← R share higher", rightLabel: "D (or Osborn) share higher →" })}
     </div>
     <div class="table-wrap"><table>
-      <thead><tr>${useActual ? "<th>#</th>" : ""}<th>Name</th>${useActual ? `<th class="num">Pts off</th>` : ""}
+      <thead><tr>${useActual ? "<th>#</th>" : ""}<th>Name</th>${useActual ? `<th class="num">Avg off</th>` : ""}
         <th class="num">Lean</th><th class="num">Noise</th>${head}</tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;

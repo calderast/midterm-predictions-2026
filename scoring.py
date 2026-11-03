@@ -26,8 +26,8 @@ Senate seat count (a point estimate):
 
 Vote-share bonus (separate leaderboard):
   For each Senate race you predict the first-listed candidate's share of the
-  two-way vote (the D candidate, or Osborn in Nebraska). It's ranked by total
-  points off across called races. A race you left unset counts as 50.
+  two-way vote (the D candidate, or Osborn in Nebraska). It's ranked by average
+  points off across the called races you actually set; unset races don't count.
   Also reported: lean = mean signed error (+ means you predicted bluer than
   reality) and noise = the standard deviation of your errors around your
   own lean.
@@ -104,12 +104,13 @@ def score_entry(predictions, results, options_by_race, seats=None, seat_result=N
 
 def margin_stats(predicted, actual, race_ids):
     """predicted / actual: {race_id: share 0-100}. Only races with an actual result count."""
-    errors = [predicted.get(r, 50.0) - actual[r] for r in race_ids if r in actual]
+    errors = [predicted[r] - actual[r] for r in race_ids if r in actual and r in predicted]
     if not errors:
         return None
     n = len(errors)
     lean = sum(errors) / n
     return {
+        "mean_off": sum(abs(e) for e in errors) / n,
         "total_off": sum(abs(e) for e in errors),
         "lean": lean,
         "noise": math.sqrt(sum((e - lean) ** 2 for e in errors) / n),
