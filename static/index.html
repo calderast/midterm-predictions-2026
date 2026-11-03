@@ -686,7 +686,8 @@ const chartWidth = (el) => Math.max(320, el.clientWidth || 900);
 // a median tick, optional actual-result diamond. Left half washed red, right half blue.
 // rows: [{ label, pts: [{ v, name?, tip }], median?, medianTip?, actual?, actualTip? }]
 function stripSVG(rows, W, { lo, hi, leftLabel, rightLabel, mid = (lo + hi) / 2 }) {
-  const rowH = 32, m = { l: 128, r: 20, t: 8, b: 40 }, ph = rows.length * rowH, H = m.t + ph + m.b;
+  const narrow = W < 520; // phones: state abbreviations and short captions
+  const rowH = 32, m = { l: narrow ? 40 : 128, r: narrow ? 12 : 20, t: 8, b: 40 }, ph = rows.length * rowH, H = m.t + ph + m.b;
   const pw = W - m.l - m.r, x = (v) => m.l + ((v - lo) / (hi - lo)) * pw;
   const step = niceStep(hi - lo, 6);
   let g = `<rect class="wash-R" x="${m.l}" y="${m.t}" width="${x(mid) - m.l}" height="${ph}"/>
@@ -696,11 +697,11 @@ function stripSVG(rows, W, { lo, hi, leftLabel, rightLabel, mid = (lo + hi) / 2 
           <text x="${x(v)}" y="${m.t + ph + 16}" text-anchor="middle">${+v.toFixed(1)}</text>`;
   }
   g += `<line class="mid-line" x1="${x(mid)}" x2="${x(mid)}" y1="${m.t}" y2="${m.t + ph}"/>
-        <text x="${m.l}" y="${H - 6}">${esc(leftLabel)}</text>
-        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(rightLabel)}</text>`;
+        <text x="${m.l}" y="${H - 6}">${esc(narrow ? "← R" : leftLabel)}</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(narrow ? "D →" : rightLabel)}</text>`;
   rows.forEach((row, i) => {
     const cy = m.t + i * rowH + rowH / 2;
-    g += `<text class="lbl" x="${m.l - 10}" y="${cy + 4}" text-anchor="end">${esc(row.label)}</text>`;
+    g += `<text class="lbl" x="${m.l - 8}" y="${cy + 4}" text-anchor="end">${esc(narrow ? row.short || row.label : row.label)}</text>`;
     row.pts.forEach((p, j) => {
       const cyj = cy + ((j % 3) - 1) * 5; // light jitter so identical values don't hide each other
       const nm = p.name ? ` data-name="${attr(p.name)}"` : "";
@@ -739,7 +740,7 @@ function crowdPicksChart(crowd) {
     const vs = crowd.probs[r.id].map((p) => p * 100), a = r.candidates[0];
     const what = r.group === "House" ? "Democrats win the House" : `${a.name} wins`;
     return {
-      label: r.state,
+      label: r.state, short: r.short || r.id,
       pts: vs.map((v) => ({ v, tip: `Someone: ${v.toFixed(0)}% that ${what}` })),
       median: median(vs), medianTip: `Crowd median: ${median(vs).toFixed(0)}% that ${what}`,
     };
@@ -760,7 +761,7 @@ function crowdMarginsChart(crowd) {
   const rows = races.map((r) => {
     const vs = crowd.margins[r.id];
     return {
-      label: r.state,
+      label: r.state, short: r.short || r.id,
       pts: vs.map((v) => ({ v, tip: `Someone: ${shareTip(r, v)}` })),
       median: median(vs), medianTip: `Crowd median: ${shareTip(r, median(vs))}`,
     };
@@ -823,8 +824,8 @@ function scatterSVG(stats, W, refLabel) {
     g += `<text x="${x(v)}" y="${H - m.b + 16}" text-anchor="middle">${Math.abs(v) < 1e-9 ? 0 : +Math.abs(v).toFixed(1)}</text>`;
   }
   g += `<line class="mid-line" x1="${x(0)}" x2="${x(0)}" y1="${m.t}" y2="${m.t + ph}"/>
-        <text x="${m.l}" y="${H - 6}">← predicted redder than ${refLabel}</text>
-        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">predicted bluer →</text>
+        <text x="${m.l}" y="${H - 6}">${W < 520 ? "← redder" : `← predicted redder than ${refLabel}`}</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${W < 520 ? "bluer →" : "predicted bluer →"}</text>
         <text transform="translate(12 ${m.t + ph / 2}) rotate(-90)" text-anchor="middle">Noise (pts)</text>`;
   const place = labelPlacer(), dots = stats.map((s) => ({ x: x(s.lean), y: y(s.noise) }));
   let labels = "";
@@ -876,7 +877,7 @@ function renderMarginBoard() {
 
   const all = [...people.flatMap((p) => Object.values(p.margins)), ...Object.values(actual)];
   const stripRows = races.map((r) => ({
-    label: r.state,
+    label: r.state, short: r.short || r.id,
     pts: people.filter((p) => p.margins[r.id] != null).map((p) => ({
       v: p.margins[r.id], name: p.name, tip: `${p.name} · ${r.state}: ${shareTip(r, p.margins[r.id])}`,
     })),
@@ -896,7 +897,7 @@ function renderMarginBoard() {
     </div>
     <div class="chart">
       <h3>Everyone's calls, race by race</h3>
-      <p class="sub">${keyDot}one person</span> ${keyMedian} ${useActual ? keyActual : ""} Hover a dot or a table row to follow one person.</p>
+      <p class="sub">${keyDot}one person</span> ${keyMedian} ${useActual ? keyActual : ""} Hover or tap a dot or table row to follow one person.</p>
       ${stripSVG(stripRows, W, { ...shareDomain(all), leftLabel: "← R share higher", rightLabel: "D (or Osborn) share higher →" })}
     </div>
     <div class="table-wrap"><table>
@@ -915,13 +916,22 @@ function wireHover(root) {
     current = name;
     if (name) root.querySelectorAll(`[data-name="${CSS.escape(name)}"]`).forEach((n) => n.classList.add("hl"));
   };
-  root.addEventListener("mousemove", (e) => {
+  // Mouse: follows the pointer. Touch: tap a dot or row to show it, tap elsewhere to dismiss.
+  const show = (e) => {
     const t = e.target.closest("[data-tip]");
-    if (t) { tip.hidden = false; tip.textContent = t.dataset.tip; tip.style.left = `${e.clientX}px`; tip.style.top = `${e.clientY}px`; }
-    else tip.hidden = true;
+    if (t) {
+      tip.hidden = false;
+      tip.textContent = t.dataset.tip;
+      const half = tip.offsetWidth / 2 + 8; // keep the tooltip on screen near the edges
+      tip.style.left = `${Math.min(Math.max(e.clientX, half), innerWidth - half)}px`;
+      tip.style.top = `${e.clientY}px`;
+    } else tip.hidden = true;
     const n = e.target.closest("[data-name]");
     highlight(n ? n.dataset.name : null);
-  });
+  };
+  root.addEventListener("mousemove", show);
+  root.addEventListener("click", show);
+  window.addEventListener("scroll", () => (tip.hidden = true), { passive: true });
   root.addEventListener("mouseleave", () => { tip.hidden = true; highlight(null); });
 }
 
