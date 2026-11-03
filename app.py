@@ -28,6 +28,9 @@ for _q in CONFIG["races"]:
         ]
     _q["min_confidence"] = min_confidence(len(_q["candidates"]))
 RACES = {r["id"]: r for r in CONFIG["races"]}
+# Each question locks when its polls close; changes after that are ignored (the earlier pick stands).
+LOCKS = {r["id"]: datetime.fromisoformat(r.get("locks_at", CONFIG["closes_at"])) for r in CONFIG["races"]}
+LOCKS["SEATS"] = datetime.fromisoformat(CONFIG["seats"].get("locks_at", CONFIG["closes_at"]))
 OPTIONS = {r["id"]: [c["id"] for c in r["candidates"]] for r in CONFIG["races"]}
 MARGIN_CFG = CONFIG["margins"]
 MARGIN_RACES = [r["id"] for r in CONFIG["races"] if r.get("group") == MARGIN_CFG["group"]]
@@ -35,7 +38,8 @@ TOTAL_SEATS = CONFIG["seats"]["total"]
 DB_PATH = os.environ.get("DB_PATH", str(ROOT / "data.db"))
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN")
 CLOSES_AT = datetime.fromisoformat(os.environ.get("CLOSES_AT", CONFIG["closes_at"]))
-if CLOSES_AT.tzinfo is None:
+ON_TIME_UNTIL = datetime.fromisoformat(os.environ.get("ON_TIME_UNTIL", CONFIG.get("on_time_until", CONFIG["closes_at"])))
+if CLOSES_AT.tzinfo is None or ON_TIME_UNTIL.tzinfo is None:
     raise SystemExit("closes_at must include a timezone, e.g. 2026-11-04T00:00:00Z")
 INDEX_HTML = ROOT / "static" / "index.html"
 
@@ -79,6 +83,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS seat_results (
                 party TEXT PRIMARY KEY,
                 seats INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS entry_versions (
+                id INTEGER PRIMARY KEY,
+                entry_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                predictions TEXT NOT NULL,
+                seats TEXT,
+                margins TEXT,
+                saved_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS margin_results (
                 race_id TEXT PRIMARY KEY,
@@ -169,6 +182,31 @@ def clean_margins(raw):
     return out or None
 
 
+def locked(qid):
+    return now() >= LOCKS[qid]
+
+
+def keep_locked(preds, seats, margins, old_preds=None, old_seats=None, old_margins=None):
+    """Drop changes to questions whose polls have closed, keeping whatever was saved before the lock."""
+    old_preds, old_margins = old_preds or {}, old_margins or {}
+    for qid in set(preds) | set(old_preds):
+        if locked(qid):
+            if qid in old_preds:
+                preds[qid] = old_preds[qid]
+            else:
+                preds.pop(qid, None)
+    if locked("SEATS"):
+        seats = old_seats
+    margins = dict(margins or {})
+    for rid in set(margins) | set(old_margins):
+        if locked(rid):
+            if rid in old_margins:
+                margins[rid] = old_margins[rid]
+            else:
+                margins.pop(rid, None)
+    return preds, seats, (margins or None)
+
+
 def require_open():
     if is_closed():
         raise ApiError(403, "Predictions are closed")
@@ -185,6 +223,7 @@ def public_config():
     return {
         "title": CONFIG["title"],
         "closes_at": CLOSES_AT.isoformat(),
+        "on_time_until": ON_TIME_UNTIL.isoformat(),
         "closed": closed,
         "races": [{**r, "winner": results.get(r["id"])} for r in CONFIG["races"]],
         "seats": {**CONFIG["seats"], "result": seat_result},
@@ -203,18 +242,31 @@ def create_entry(body):
     preds = clean_predictions(body.get("predictions", {}))
     seats = clean_seats(body.get("seats"))
     margins = clean_margins(body.get("margins"))
+    preds, seats, margins = keep_locked(preds, seats, margins)
     token = secrets.token_urlsafe(16)
     ts = now().isoformat()
     try:
         with db() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO entries (token, name, predictions, seats, margins, created_at, updated_at)"
                 " VALUES (?,?,?,?,?,?,?)",
                 (token, name, json.dumps(preds), json.dumps(seats), json.dumps(margins), ts, ts),
             )
+            save_version(conn, cur.lastrowid, name, preds, seats, margins, ts)
     except sqlite3.IntegrityError:
         raise ApiError(409, "That name is taken. If it's you, open your edit link instead.")
     return entry_json(token, name, preds, seats, margins)
+
+
+def save_version(conn, entry_id, name, preds, seats, margins, ts):
+    conn.execute(
+        "INSERT INTO entry_versions (entry_id, name, predictions, seats, margins, saved_at) VALUES (?,?,?,?,?,?)",
+        (entry_id, name, json.dumps(preds), json.dumps(seats), json.dumps(margins), ts),
+    )
+
+
+def is_late(ts):
+    return datetime.fromisoformat(ts) >= ON_TIME_UNTIL
 
 
 def load_entry(conn, token):
@@ -239,11 +291,16 @@ def update_entry(token, body):
     margins = clean_margins(body.get("margins"))
     try:
         with db() as conn:
-            load_entry(conn, token)
+            row = load_entry(conn, token)
+            preds, seats, margins = keep_locked(
+                preds, seats, margins, json.loads(row["predictions"]),
+                json.loads(row["seats"] or "null"), json.loads(row["margins"] or "null"))
+            ts = now().isoformat()
             conn.execute(
                 "UPDATE entries SET name = ?, predictions = ?, seats = ?, margins = ?, updated_at = ? WHERE token = ?",
-                (name, json.dumps(preds), json.dumps(seats), json.dumps(margins), now().isoformat(), token),
+                (name, json.dumps(preds), json.dumps(seats), json.dumps(margins), ts, token),
             )
+            save_version(conn, row["id"], name, preds, seats, margins, ts)
     except sqlite3.IntegrityError:
         raise ApiError(409, "That name is taken")
     return entry_json(token, name, preds, seats, margins)
@@ -271,32 +328,49 @@ def crowd_summary(rows):
 
 def leaderboard():
     with db() as conn:
-        rows = conn.execute("SELECT name, predictions, seats, margins FROM entries ORDER BY created_at").fetchall()
+        rows = conn.execute(
+            "SELECT id, name, predictions, seats, margins, created_at, updated_at FROM entries ORDER BY created_at"
+        ).fetchall()
+        versions = conn.execute("SELECT * FROM entry_versions ORDER BY saved_at, id").fetchall()
         results = get_results(conn)
         seat_result = get_seat_result(conn)
         margin_results = get_margin_results(conn)
     if not is_closed():
         # Keep everyone's picks private until the pool locks.
-        out = {"closed": False, "entrants": [r["name"] for r in rows]}
+        out = {"closed": False, "entrants": [r["name"] for r in rows],
+               "late": [r["name"] for r in rows if is_late(r["updated_at"])]}
         if CONFIG.get("crowd_preview", True):
             out["crowd"] = crowd_summary(rows)
         return out
-    entries = []
-    for r in rows:
-        preds = json.loads(r["predictions"])
-        seats = json.loads(r["seats"] or "null")
-        margins = json.loads(r["margins"] or "null")
-        entries.append({
-            "name": r["name"], "predictions": preds, "seats": seats,
+    def build(name, snap, saved_at):
+        preds = json.loads(snap["predictions"])
+        seats = json.loads(snap["seats"] or "null")
+        margins = json.loads(snap["margins"] or "null")
+        return {
+            "name": name, "predictions": preds, "seats": seats, "saved_at": saved_at, "late": is_late(saved_at),
             "seat_error": seat_error(seats, seat_result),
             "margins": margins,
             "margin_stats": margin_stats(margins, margin_results, MARGIN_RACES) if margins else None,
             **score_entry(preds, results, OPTIONS, seats, seat_result),
-        })
+        }
+
+    by_entry = {}
+    for v in versions:
+        by_entry.setdefault(v["entry_id"], []).append(v)
+    latest, on_time = [], []
+    for r in rows:
+        latest.append(build(r["name"], r, r["updated_at"]))
+        # Last version saved before the on-time deadline (entries saved before history existed count as-is).
+        hist = by_entry.get(r["id"]) or [{**dict(r), "saved_at": r["updated_at"]}]
+        ok = [v for v in hist if not is_late(v["saved_at"])]
+        if ok:
+            on_time.append(build(r["name"], ok[-1], ok[-1]["saved_at"]))
     # Default order is log score with Brier tiebreak; the page can re-sort by Brier.
-    entries.sort(key=lambda e: (-e["total"], e["brier"] if e["brier"] is not None else 1, e["name"].lower()))
+    key = lambda e: (-e["total"], e["brier"] if e["brier"] is not None else 1, e["name"].lower())
+    latest.sort(key=key)
+    on_time.sort(key=key)
     return {"closed": True, "results": results, "seat_result": seat_result,
-            "margin_results": margin_results, "entries": entries}
+            "margin_results": margin_results, "entries": on_time, "entries_with_late": latest}
 
 
 def set_results(headers, body):

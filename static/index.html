@@ -111,6 +111,12 @@
   tr.hl td { background: color-mix(in srgb, var(--I) 10%, transparent); }
   #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--bg); font-size: 12px;
          padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
+  .late { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+          border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+  .lock-note { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+  .mhead .lock-note { margin: 0; }
+  .locked { opacity: 0.55; }
+  .locked .lock-note { font-weight: 600; }
   .how p, .how li { color: var(--muted); max-width: 680px; }
   [hidden] { display: none !important; }
 </style>
@@ -140,6 +146,7 @@
             <label class="p-R">R <input type="number" id="seats-R" min="0" max="100" step="1" inputmode="numeric"></label>
           </div>
           <div class="conf-label muted" id="seats-label"></div>
+          <div class="lock-note"></div>
         </div>
       </div>
       <h3 class="group-heading">Senate races</h3>
@@ -188,6 +195,8 @@
           each side's share of the two-way vote, and you're ranked by total percentage points off. Races you don't set count as 50–50.
           <i>Lean</i> is your average miss toward one party (did you expect a bigger blue wave than happened?), and
           <i>noise</i> is how scattered your misses are around that lean.</li>
+      <li><b>Deadlines:</b> each question locks when the first polls close in that state (national questions lock at the first 7pm ET closings).
+          After that you can't change it, and whatever you saved before the lock counts. The leaderboard is revealed once the last polls close. Every save is timestamped.</li>
       <li>Nobody can see anyone else's picks until predictions close.</li>
     </ul>
   </section>
@@ -248,13 +257,46 @@ function renderStatus() {
   const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
         m = Math.floor(s % 3600 / 60), sec = s % 60;
   const left = (d ? `${d}d ` : "") + `${h}h ${String(m).padStart(2, "0")}m ${String(sec).padStart(2, "0")}s`;
-  $("#status").textContent = `Predictions close ${when} (${left} left). Share this page's link to invite people.`;
+  const next = config.races.map((r) => new Date(r.locks_at)).filter((t) => t > Date.now()).sort((a, b) => a - b)[0];
+  const nextQs = next ? config.races.filter((r) => +new Date(r.locks_at) === +next).map((r) => r.state) : [];
+  const nextWhen = next ? next.toLocaleString([], { timeStyle: "short" }) : "";
+  $("#status").innerHTML = `Each question locks when its polls close. ` +
+    (next ? `Next to lock: <b>${esc(nextQs.join(", "))}</b> at <b>${esc(nextWhen)}</b>. ` : "") +
+    `The leaderboard is revealed after the last polls close, ${esc(when)} (${left} left). Share this page's link to invite people.`;
+  applyLocks();
 }
 
 // ---------- prediction form ----------
 const colorOf = (c) => c.color || c.party;
 
 const isMulti = (r) => r.candidates.length > 2;
+const isLocked = (t) => t && Date.now() >= new Date(t);
+const lockTime = (t) => new Date(t).toLocaleString([], { timeStyle: "short" });
+
+// Grey out and disable anything whose polls have closed (the server ignores changes to it anyway).
+function applyLocks() {
+  for (const card of document.querySelectorAll(".race[data-race]")) {
+    const r = raceById(card.dataset.race), lock = isLocked(r.locks_at);
+    if (card.dataset.locked === String(lock)) continue;
+    card.dataset.locked = String(lock);
+    card.classList.toggle("locked", lock);
+    card.querySelectorAll("input, select, button").forEach((i) => (i.disabled = lock || (i.type === "range" && !getPick(card))));
+    card.querySelector(".lock-note").textContent = lock ? `Polls closed, so this is locked` : `Locks at ${lockTime(r.locks_at)}`;
+  }
+  const seatLock = isLocked(config.seats.locks_at), sc = $("#seats-card");
+  if (sc) {
+    sc.classList.toggle("locked", seatLock);
+    sc.querySelectorAll("input").forEach((i) => (i.disabled = seatLock));
+    const n = sc.querySelector(".lock-note");
+    if (n) n.textContent = seatLock ? "Polls closed, so this is locked" : `Locks at ${lockTime(config.seats.locks_at)}`;
+  }
+  for (const row of document.querySelectorAll(".mrow")) {
+    const r = raceById(row.dataset.mrace), lock = isLocked(r.locks_at);
+    row.classList.toggle("locked", lock);
+    row.querySelectorAll("input, button").forEach((i) => (i.disabled = lock));
+    row.querySelector(".lock-note").textContent = lock ? "Locked" : `Locks ${lockTime(r.locks_at)}`;
+  }
+}
 const minPct = (r) => Math.round(r.min_confidence * 100);
 
 function raceCard(r) {
@@ -273,6 +315,7 @@ function raceCard(r) {
     <div class="card race" data-race="${esc(r.id)}">
       <h3>${esc(r.state)}</h3>
       <div class="note">${esc(r.note || "")}</div>
+      <div class="lock-note"></div>
       <div class="picks">${picker}</div>
       <input type="range" min="${minPct(r)}" max="99" step="1" value="${start}" disabled aria-label="Confidence in ${esc(r.state)}">
       <div class="conf-label muted"></div>
@@ -324,7 +367,7 @@ function renderForm() {
     const clear = card.querySelector(".clear");
     const update = () => {
       const pick = getPick(card);
-      range.disabled = !pick;
+      range.disabled = !pick || isLocked(race.locks_at);
       clear.hidden = !pick;
       if (!pick) { label.textContent = isMulti(race) ? "No pick (counts as a random guess)" : "No pick (counts as 50/50)"; return; }
       const c = candById(race, pick);
@@ -386,6 +429,7 @@ function showSaved(entry) {
   $("#form-msg").innerHTML = `
     <div class="notice">
       <b>Saved.</b> ${Object.keys(entry.predictions).length} of ${config.races.length} questions answered${entry.seats ? "" : ", seat count left blank"}.
+      ${Date.now() >= new Date(config.on_time_until) ? "<b>This save is after the on-time deadline, so it's marked late.</b> Your last on-time save still counts in the default ranking." : ""}
       Bookmark your private edit link to change your picks before close:
       <div class="row" style="margin:8px 0 0">
         <span class="link">${esc(link)}</span>
@@ -427,6 +471,28 @@ $("#new-entry").addEventListener("click", () => {
 const fmt = (x, digits = 2) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(digits);
 
 let scoring = null; // "log" | "brier", chosen by the viewer
+let includeLate = false;
+const boardEntries = () => (includeLate ? lastBoard.entries_with_late : lastBoard.entries) || [];
+const lateBadge = (e) => (e.late ? ` <span class="late" title="Saved ${esc(new Date(e.saved_at).toLocaleTimeString([], { timeStyle: "short" }))}">late</span>` : "");
+function lateToggle() {
+  const nLate = (lastBoard.entries_with_late || []).filter((e) => e.late).length;
+  if (!nLate) return "";
+  return `<div class="row" style="margin-top:0">
+      <span class="muted">Picks</span>
+      <div class="seg" role="group" aria-label="Late picks">
+        <button type="button" data-late="0" aria-pressed="${!includeLate}">On time only</button>
+        <button type="button" data-late="1" aria-pressed="${includeLate}">Include late (${nLate})</button>
+      </div>
+      <span class="muted">${includeLate ? "Using everyone's latest save. Late rows are flagged." : "Using each person's last save before the on-time deadline."}</span>
+    </div>`;
+}
+function wireLateToggle(root) {
+  root.querySelectorAll("[data-late]").forEach((b) => b.addEventListener("click", () => {
+    includeLate = b.dataset.late === "1";
+    renderBoard();
+    renderMarginBoard();
+  }));
+}
 let lastBoard = null;
 
 async function loadBoard() {
@@ -440,12 +506,12 @@ function renderBoard() {
   if (!board.closed) {
     $("#board").innerHTML = board.entrants.length
       ? `<p>${board.entrants.length} ${board.entrants.length === 1 ? "person has" : "people have"} entered. Picks stay hidden until close.</p>
-         <div class="chips">${board.entrants.map((n) => `<span class="chip">${esc(n)}</span>`).join("")}</div>`
+         <div class="chips">${board.entrants.map((n) => `<span class="chip">${esc(n)}${(board.late || []).includes(n) ? ` <span class="late">late</span>` : ""}</span>`).join("")}</div>`
       : "<p>No entries yet. Be the first.</p>";
     if (board.crowd) $("#board").innerHTML += crowdPicksChart(board.crowd);
     return;
   }
-  if (!board.entries.length) { $("#board").innerHTML = "<p>No one entered.</p>"; return; }
+  if (!board.entries.length && !(board.entries_with_late || []).length) { $("#board").innerHTML = "<p>No one entered.</p>"; return; }
 
   scoring = scoring || store.get("scoring") || config.default_scoring || "log";
   const byLog = scoring === "log";
@@ -456,7 +522,7 @@ function renderBoard() {
     const log = r6(b.total) - r6(a.total), br = r6(brierOf(a)) - r6(brierOf(b));
     return (byLog ? log || br : br || log) || a.name.localeCompare(b.name);
   };
-  const entries = [...board.entries].sort(cmp);
+  const entries = [...boardEntries()].sort(cmp);
 
   const called = Object.keys(board.results).length;
   const head = config.races.map((r) => {
@@ -485,13 +551,13 @@ function renderBoard() {
       ? `<span class="p-D">${e.seats.D}</span>–<span class="p-R">${e.seats.R}</span>${e.seat_error === null ? "" : ` <span class="muted">(${e.seat_error} off)</span>`}`
       : "·";
     const logCell = fmt(e.total), brierCell = e.brier === null ? "–" : e.brier.toFixed(3);
-    return `<tr><td>${rank}</td><td>${esc(e.name)}</td>
+    return `<tr><td>${rank}</td><td>${esc(e.name)}${lateBadge(e)}</td>
       <td class="num">${byLog ? `<b>${logCell}</b>` : logCell}</td>
       <td class="num">${byLog ? brierCell : `<b>${brierCell}</b>`}</td>
       <td class="cell ${seatCls}" title="${seatTip}">${seats}</td>${cells}</tr>`;
   }).join("");
   const sr = board.seat_result;
-  $("#board").innerHTML = `
+  $("#board").innerHTML = `${lateToggle()}
     <div class="row" style="margin-top:0">
       <span class="muted">Rank by</span>
       <div class="seg" role="group" aria-label="Scoring rule">
@@ -506,6 +572,7 @@ function renderBoard() {
       <thead><tr><th>#</th><th>Name</th><th class="num">Log (KL)</th><th class="num">Brier</th><th class="cell">Seats D–R</th>${head}</tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+  wireLateToggle($("#board"));
   document.querySelectorAll("[data-scoring]").forEach((b) => b.addEventListener("click", () => {
     scoring = b.dataset.scoring;
     store.set("scoring", scoring);
@@ -525,7 +592,7 @@ function marginRow(r) {
   const m = config.margins, a = sideA(r), b = sideB(r);
   return `
     <div class="mrow unset" data-mrace="${esc(r.id)}">
-      <div class="mhead"><b>${esc(r.state)}</b><button type="button" class="clear" hidden>clear</button></div>
+      <div class="mhead"><b>${esc(r.state)}</b><span><span class="lock-note"></span> <button type="button" class="clear" hidden>clear</button></span></div>
       <div class="mnames">
         <span class="p-${esc(colorOf(b))}">${esc(b.name)}</span>
         <span class="p-${esc(colorOf(a))}">${esc(a.name)}</span>
@@ -715,7 +782,7 @@ function marginStats(people, races, actual, consensus) {
       : races.filter((r) => p.margins[r.id] != null && r.id in consensus).map((r) => p.margins[r.id] - consensus[r.id]);
     const n = errs.length, net = errs.reduce((a, e) => a + e, 0), lean = n ? net / n : 0;
     return {
-      name: p.name, margins: p.margins, n, lean, net, score: p.total,
+      name: p.name, margins: p.margins, n, lean, net, score: p.total, late: p.late,
       noise: n ? Math.sqrt(errs.reduce((a, e) => a + (e - lean) ** 2, 0) / n) : 0,
       off: errs.reduce((a, e) => a + Math.abs(e), 0),
     };
@@ -780,7 +847,7 @@ function renderMarginBoard() {
     return;
   }
   const races = marginRaces();
-  const people = board.entries.filter((e) => e.margins);
+  const people = boardEntries().filter((e) => e.margins);
   if (!people.length) { el.innerHTML = `<p class="muted">Nobody entered vote shares.</p>`; return; }
   const actual = board.margin_results || {};
   const consensus = {};
@@ -801,7 +868,7 @@ function renderMarginBoard() {
     if (key !== prev) rank = i + 1;
     prev = key;
     const cells = races.map((r) => `<td class="cell">${s.margins[r.id] == null ? "·" : s.margins[r.id].toFixed(1)}</td>`).join("");
-    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rank}</td>` : ""}<td>${esc(s.name)}</td>
+    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rank}</td>` : ""}<td>${esc(s.name)}${s.late ? ` <span class="late">late</span>` : ""}</td>
       ${useActual ? `<td class="num"><b>${s.off.toFixed(1)}</b></td>` : ""}
       <td class="num">${leanText(s.lean)}</td><td class="num">${s.noise.toFixed(1)}</td>${cells}</tr>`;
   }).join("");

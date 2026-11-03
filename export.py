@@ -11,13 +11,16 @@ anything that has a result:
   picks.csv        one row per person × pick-one question (Senate, House, CA/SF, closest race)
   seats.csv        each person's Senate seat-count guess and its score
   vote_shares.csv  one row per person × Senate race vote-share guess, with the signed error
+  versions.csv     every save anyone made, timestamped and flagged late if after on_time_until
   results.csv      every result you've entered
 """
 
 import argparse
 import csv
 import json
+import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from scoring import brier, forecast, log_score, seat_error, seat_prob
@@ -111,6 +114,12 @@ def main():
     write(out / "vote_shares.csv",
           ["name", "race_id", "state", "first_candidate", "second_candidate",
            "pred_first_share", "actual_first_share", "error_bluer_positive"], vs)
+
+    versions = conn.execute("SELECT * FROM entry_versions ORDER BY saved_at, id").fetchall()
+    on_time_until = datetime.fromisoformat(os.environ.get("ON_TIME_UNTIL", cfg.get("on_time_until", cfg["closes_at"])))
+    write(out / "versions.csv", ["name", "saved_at", "late", "predictions_json", "seats_json", "margins_json"],
+          [[v["name"], v["saved_at"], datetime.fromisoformat(v["saved_at"]) >= on_time_until,
+            v["predictions"], v["seats"], v["margins"]] for v in versions])
 
     res = [[k, "winner", v] for k, v in results.items()]
     res += [[k, "first_candidate_share", v] for k, v in shares.items()]
