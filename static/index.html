@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Midterm Prediction Pool</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --text: #1a1a1a; --muted: #6b6b6b; --border: #e2e2de;
+    --accent: #1a1a1a; --accent-text: #ffffff;
+    --D: #2563eb; --R: #dc2626; --I: #7c3aed; --X: #0f766e; --Y: #b45309; --on-pick: #ffffff;
+    --good: #15803d; --bad: #b91c1c; --good-bg: #dcfce7; --bad-bg: #fee2e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141414; --surface: #1e1e1e; --text: #ededed; --muted: #9a9a9a; --border: #333;
+      --accent: #ededed; --accent-text: #141414;
+      --D: #60a5fa; --R: #f87171; --I: #a78bfa; --X: #2dd4bf; --Y: #fbbf24; --on-pick: #141414;
+      --good: #4ade80; --bad: #f87171; --good-bg: #14532d55; --bad-bg: #7f1d1d55;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 40px 0 12px; }
+  .muted { color: var(--muted); }
+  #status { font-variant-numeric: tabular-nums; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .race h3 { margin: 0; font-size: 16px; }
+  .race .note { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .picks { display: flex; gap: 6px; margin-bottom: 10px; }
+  .pick-select { width: 100%; }
+  .picks label { flex: 1; text-align: center; padding: 7px 4px; border: 1.5px solid var(--border);
+                 border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; user-select: none; }
+  .picks input { position: absolute; opacity: 0; pointer-events: none; }
+  .picks label:has(input:checked) { color: var(--on-pick); }
+  .picks label:has(input:focus-visible) { outline: 2px solid var(--text); outline-offset: 2px; }
+  .p-D { color: var(--D); } .p-R { color: var(--R); } .p-I { color: var(--I); }
+  .p-X { color: var(--X); } .p-Y { color: var(--Y); }
+  .picks label.p-D:has(input:checked) { background: var(--D); border-color: var(--D); }
+  .picks label.p-R:has(input:checked) { background: var(--R); border-color: var(--R); }
+  .picks label.p-I:has(input:checked) { background: var(--I); border-color: var(--I); }
+  .picks label.p-X:has(input:checked) { background: var(--X); border-color: var(--X); }
+  .picks label.p-Y:has(input:checked) { background: var(--Y); border-color: var(--Y); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; padding: 6px 12px; border: 0; background: var(--surface); color: var(--text); cursor: pointer; }
+  .seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--text); }
+  .conf-label { font-size: 13px; font-variant-numeric: tabular-nums; min-height: 1.5em; }
+  .clear { background: none; border: 0; padding: 0; color: var(--muted); font-size: 12px; cursor: pointer; text-decoration: underline; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+  input[type=text], input[type=password], select {
+    font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--text); }
+  input[type=text] { min-width: 220px; flex: 1; max-width: 340px; }
+  button.primary { font: inherit; font-weight: 600; padding: 9px 18px; border-radius: 8px; border: 0;
+                   background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  button.secondary { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+                     background: var(--surface); color: var(--text); cursor: pointer; }
+  .notice { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); margin: 12px 0; }
+  .notice.error { border-color: var(--bad); color: var(--bad); }
+  .link { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; }
+  td.cell { text-align: center; font-size: 13px; }
+  td.hit { background: var(--good-bg); } td.miss { background: var(--bad-bg); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+  .group-heading { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+                   margin: 32px 0 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .picks label .tag { font-weight: 500; opacity: 0.75; font-size: 12px; }
+  .seat-inputs { display: flex; gap: 10px; margin-bottom: 8px; }
+  .seat-inputs label { flex: 1; display: flex; align-items: center; gap: 6px; font-weight: 700; }
+  .seat-inputs input { width: 100%; font: inherit; padding: 7px 8px; border: 1px solid var(--border);
+                       border-radius: 8px; background: var(--surface); color: var(--text); }
+  .margin-list { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .mrow { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+  .mrow.unset { opacity: 0.8; }
+  .mhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
+  .mnames, .mnums { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+  .mnames { margin-top: 4px; font-weight: 600; }
+  .mnums { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 17px; font-weight: 700; }
+  .mrow input[type=range] { width: 100%; margin: 4px 0 2px; accent-color: var(--lean, var(--muted)); }
+  .mwin { font-size: 14px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .chart { margin: 16px 0; }
+  .chart h3 { font-size: 15px; margin: 0 0 2px; }
+  .chart .sub { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart text { fill: var(--muted); font-size: 11px; font-family: inherit; }
+  .chart .lbl { fill: var(--text); font-size: 12px; }
+  .chart .grid-line { stroke: var(--border); stroke-width: 1; }
+  .chart .mid-line { stroke: var(--muted); stroke-width: 1; }
+  .chart .wash-D { fill: var(--D); opacity: 0.07; } .chart .wash-R { fill: var(--R); opacity: 0.07; }
+  .chart .dot { fill: var(--muted); stroke: var(--surface); stroke-width: 2; cursor: default; }
+  .chart .dot.hl { fill: var(--I); r: 6px; }
+  .chart .ref { fill: var(--text); stroke: var(--surface); stroke-width: 2; }
+  .chart .consensus { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+  .chart .hit { fill: transparent; }
+  .chart .wash-R, .chart .wash-D { stroke: none; }
+
+  .chart .lbl.hl { font-weight: 700; fill: var(--I); }
+  .key { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
+  .chart .key svg { display: inline-block; width: auto; }
+  tr.hl td { background: color-mix(in srgb, var(--I) 10%, transparent); }
+  #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--bg); font-size: 12px;
+         padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
+  .how p, .how li { color: var(--muted); max-width: 680px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Midterm Prediction Pool</h1>
+  <div id="status" class="muted">Loading…</div>
+
+  <section id="form-section" hidden>
+    <h2 id="form-heading">Your predictions</h2>
+    <p class="muted" style="margin-top:-6px">Pick an outcome for each question and set how sure you are. For yes/no questions, 50% = coin flip and 99% = near certain. Skipped questions count as a pure guess.</p>
+    <form id="form">
+      <div class="row">
+        <input type="text" id="name" placeholder="Your name" maxlength="40" required autocomplete="nickname">
+      </div>
+      <div id="tab-main">
+      <h3 class="group-heading">House</h3>
+      <div id="races-House" class="grid"></div>
+      <h3 class="group-heading">Senate balance</h3>
+      <div class="grid">
+        <div class="card race" id="seats-card">
+          <h3>Senate seat count</h3>
+          <div class="note" id="seats-note"></div>
+          <div class="seat-inputs">
+            <label class="p-D">D <input type="number" id="seats-D" min="0" max="100" step="1" inputmode="numeric"></label>
+            <label class="p-R">R <input type="number" id="seats-R" min="0" max="100" step="1" inputmode="numeric"></label>
+          </div>
+          <div class="conf-label muted" id="seats-label"></div>
+        </div>
+      </div>
+      <h3 class="group-heading">Senate races</h3>
+      <div id="races-Senate" class="grid"></div>
+      <h3 class="group-heading">California &amp; San Francisco</h3>
+      <div id="races-Local" class="grid"></div>
+      <h3 class="group-heading">Bonus</h3>
+      <div id="races-Bonus" class="grid"></div>
+      </div>
+      <div id="tab-margins">
+        <h3 class="group-heading">Bonus: vote share</h3>
+        <p class="muted" id="margins-note"></p>
+        <div id="margin-rows" class="margin-list"></div>
+      </div>
+      <div class="row">
+        <button class="primary" type="submit" id="submit">Submit predictions</button>
+        <button class="secondary" type="button" id="new-entry" hidden>Start a new entry</button>
+      </div>
+    </form>
+    <div id="form-msg"></div>
+  </section>
+
+  <section>
+    <h2>Leaderboard</h2>
+    <div id="board" class="muted">Loading…</div>
+    <h3 class="group-heading" id="votes">Bonus: vote share</h3>
+    <div id="margin-board"></div>
+  </section>
+
+  <section class="how">
+    <h2>How scoring works</h2>
+    <p>Your pick and confidence form a probability for each question. Use the toggle above the leaderboard to rank by either rule:</p>
+    <ul>
+      <li><b>Log score (KL divergence):</b> you score <b>1 + log₂(p)</b>, where <i>p</i> is the probability you gave the actual outcome.
+          That's the KL divergence between the outcome and your forecast, in bits, shifted so a coin flip scores 0. Higher is better.<br>
+          99% right: +0.99 · 80% right: +0.68 · 50%: 0 · 80% wrong: −1.32 · 99% wrong: −5.64</li>
+      <li><b>Brier score:</b> the average of (1 − p)². Lower is better and a coin flip scores 0.25.<br>
+          99% right: 0.0001 · 80% right: 0.04 · 50%: 0.25 · 80% wrong: 0.64 · 99% wrong: 0.98</li>
+      <li>Log score punishes a confident miss much harder. Under Brier, a bold wrong call costs less.</li>
+      <li><b>Closest race</b> has 13 options, so confidence starts at 8% (a random guess) and the other races split the rest.
+          The log score is scaled so a random guess scores 0 and a perfect call scores about 1, the same as any other question.</li>
+      <li><b>Senate seat count:</b> an exact guess counts like a 99% correct call, and every 2 seats off halves it.
+          Exact: +0.99 · 1 off: +0.49 · 2 off: 0 · 4 off: −1.0. Leaving it blank counts as 2 off.</li>
+      <li>Each rule breaks ties for the other. Skipped questions count as a pure guess.</li>
+      <li><b>Bonus: vote share</b> has its own leaderboard and doesn't affect the main score. For each Senate race you predict
+          each side's share of the two-way vote, and you're ranked by total percentage points off. Races you don't set count as 50–50.
+          <i>Lean</i> is your average miss toward one party (did you expect a bigger blue wave than happened?), and
+          <i>noise</i> is how scattered your misses are around that lean.</li>
+      <li>Nobody can see anyone else's picks until predictions close.</li>
+    </ul>
+  </section>
+
+  <section id="admin" hidden>
+    <h2>Admin: enter results</h2>
+    <div class="row"><input type="password" id="admin-token" placeholder="Admin token"></div>
+    <div id="admin-races" class="grid"></div>
+    <div class="row">
+      <span>Final Senate seats:</span>
+      <label class="p-D">D <input type="number" id="admin-seats-D" min="0" max="100" style="width:70px"></label>
+      <label class="p-R">R <input type="number" id="admin-seats-R" min="0" max="100" style="width:70px"></label>
+      <span class="muted">(leave blank until final)</span>
+    </div>
+    <h3 class="group-heading">Vote share: D (or Osborn) % of the two-way vote</h3>
+    <div id="admin-margins" class="grid"></div>
+    <div class="row"><button class="primary" id="admin-save">Save results</button></div>
+    <div id="admin-msg"></div>
+  </section>
+</main>
+
+<div id="tip" hidden></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let config;
+let token = new URLSearchParams(location.search).get("entry") || store.get("entryToken");
+
+async function api(method, path, body, headers = {}) {
+  const res = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json", ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
+  return data;
+}
+
+const raceById = (id) => config.races.find((r) => r.id === id);
+const candById = (race, id) => race.candidates.find((c) => c.id === id);
+
+// ---------- status / countdown ----------
+function renderStatus() {
+  const ms = new Date(config.closes_at) - Date.now();
+  const when = new Date(config.closes_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  if (ms <= 0) {
+    $("#status").textContent = `Predictions closed ${when}.`;
+    if (!config.closed) location.reload(); // flip to closed view right at the deadline
+    return;
+  }
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+        m = Math.floor(s % 3600 / 60), sec = s % 60;
+  const left = (d ? `${d}d ` : "") + `${h}h ${String(m).padStart(2, "0")}m ${String(sec).padStart(2, "0")}s`;
+  $("#status").textContent = `Predictions close ${when} (${left} left). Share this page's link to invite people.`;
+}
+
+// ---------- prediction form ----------
+const colorOf = (c) => c.color || c.party;
+
+const isMulti = (r) => r.candidates.length > 2;
+const minPct = (r) => Math.round(r.min_confidence * 100);
+
+function raceCard(r) {
+  const picker = isMulti(r)
+    ? `<select class="pick-select" aria-label="${esc(r.state)}">
+         <option value="">Pick one…</option>
+         ${r.candidates.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}
+       </select>`
+    : r.candidates.map((c) => `
+          <label class="p-${esc(colorOf(c))}">
+            <input type="radio" name="pick-${esc(r.id)}" value="${esc(c.id)}">${esc(c.name)}
+            ${c.party ? `<span class="tag">(${esc(c.party)})</span>` : ""}
+          </label>`).join("");
+  const start = isMulti(r) ? 30 : 65;
+  return `
+    <div class="card race" data-race="${esc(r.id)}">
+      <h3>${esc(r.state)}</h3>
+      <div class="note">${esc(r.note || "")}</div>
+      <div class="picks">${picker}</div>
+      <input type="range" min="${minPct(r)}" max="99" step="1" value="${start}" disabled aria-label="Confidence in ${esc(r.state)}">
+      <div class="conf-label muted"></div>
+      <button type="button" class="clear" hidden>clear</button>
+    </div>`;
+}
+
+function getPick(card) {
+  const sel = card.querySelector(".pick-select");
+  if (sel) return sel.value || null;
+  const radio = card.querySelector("input[type=radio]:checked");
+  return radio ? radio.value : null;
+}
+
+function setPick(card, value) {
+  const sel = card.querySelector(".pick-select");
+  if (sel) sel.value = value || "";
+  else card.querySelectorAll("input[type=radio]").forEach((i) => (i.checked = i.value === value));
+}
+
+function renderSeatsLabel() {
+  const d = $("#seats-D").value, r = $("#seats-R").value, total = config.seats.total;
+  if (d === "" || r === "") { $("#seats-label").textContent = "Optional. Blank counts as 2 seats off (a coin flip)."; return; }
+  const D = Number(d), R = Number(r), other = total - D - R;
+  const control = D > R ? "Democratic majority" : R > D ? "Republican majority" : "Tie (the VP breaks it)";
+  $("#seats-label").textContent = other < 0
+    ? `That's ${D + R} seats, but there are only ${total}.`
+    : `${control}${other ? ` · ${other} seat${other === 1 ? "" : "s"} held by neither caucus` : ""}`;
+}
+
+function renderForm() {
+  for (const group of ["House", "Senate", "Local", "Bonus"]) {
+    $(`#races-${group}`).innerHTML = config.races.filter((r) => r.group === group).map(raceCard).join("");
+  }
+  $("#seats-note").textContent = config.seats.note;
+  // Typing D fills in R as the remainder, unless R was edited by hand.
+  $("#seats-D").addEventListener("input", () => {
+    const d = $("#seats-D").value;
+    if (d !== "" && !$("#seats-R").dataset.touched) $("#seats-R").value = Math.max(0, config.seats.total - Number(d));
+    renderSeatsLabel();
+  });
+  $("#seats-R").addEventListener("input", () => { $("#seats-R").dataset.touched = "1"; renderSeatsLabel(); });
+  renderSeatsLabel();
+
+  for (const card of document.querySelectorAll(".race[data-race]")) {
+    const race = raceById(card.dataset.race);
+    const range = card.querySelector("input[type=range]");
+    const label = card.querySelector(".conf-label");
+    const clear = card.querySelector(".clear");
+    const update = () => {
+      const pick = getPick(card);
+      range.disabled = !pick;
+      clear.hidden = !pick;
+      if (!pick) { label.textContent = isMulti(race) ? "No pick (counts as a random guess)" : "No pick (counts as 50/50)"; return; }
+      const c = candById(race, pick);
+      const who = `<span class="p-${esc(colorOf(c))}">${esc(c.name)}</span>`;
+      const pct = `<b>${range.value}%</b>`;
+      label.innerHTML = Number(range.value) === minPct(race)
+        ? (isMulti(race) ? `${range.value}%: no better than a random guess` : "50%: toss-up")
+        : race.verb ? `${pct} that ${who} ${esc(race.verb)}`
+        : c.party ? `${pct} that ${who} wins` : `${pct} on ${who}`;
+    };
+    card.addEventListener("input", update);
+    card.addEventListener("change", update);
+    clear.addEventListener("click", () => { setPick(card, null); update(); });
+    card.update = update;
+    update();
+  }
+}
+
+function fillForm(entry) {
+  $("#name").value = entry.name;
+  $("#seats-D").value = entry.seats ? entry.seats.D : "";
+  $("#seats-R").value = entry.seats ? entry.seats.R : "";
+  if (entry.seats) $("#seats-R").dataset.touched = "1";
+  renderSeatsLabel();
+  for (const card of document.querySelectorAll(".race[data-race]")) {
+    const p = entry.predictions[card.dataset.race];
+    setPick(card, p ? p.pick : null);
+    if (p) card.querySelector("input[type=range]").value = Math.round(p.confidence * 100);
+    card.update();
+  }
+  fillMargins(entry.margins);
+}
+
+function collect() {
+  const predictions = {};
+  for (const card of document.querySelectorAll(".race[data-race]")) {
+    const pick = getPick(card);
+    if (pick) predictions[card.dataset.race] = {
+      pick,
+      confidence: Number(card.querySelector("input[type=range]").value) / 100,
+    };
+  }
+  const d = $("#seats-D").value, r = $("#seats-R").value;
+  const seats = d === "" || r === "" ? null : { D: Number(d), R: Number(r) };
+  return { name: $("#name").value, predictions, seats, margins: collectMargins() };
+}
+
+function setEditing(entry) {
+  token = entry.token;
+  store.set("entryToken", token);
+  history.replaceState(null, "", `?entry=${encodeURIComponent(token)}${location.hash}`);
+  $("#form-heading").textContent = `Editing ${entry.name}'s predictions`;
+  $("#submit").textContent = "Update predictions";
+  $("#new-entry").hidden = false;
+}
+
+function showSaved(entry) {
+  const link = `${location.origin}${location.pathname}?entry=${encodeURIComponent(entry.token)}`;
+  $("#form-msg").innerHTML = `
+    <div class="notice">
+      <b>Saved.</b> ${Object.keys(entry.predictions).length} of ${config.races.length} questions answered${entry.seats ? "" : ", seat count left blank"}.
+      Bookmark your private edit link to change your picks before close:
+      <div class="row" style="margin:8px 0 0">
+        <span class="link">${esc(link)}</span>
+        <button class="secondary" type="button" id="copy-link">Copy</button>
+      </div>
+    </div>`;
+  $("#copy-link").onclick = async (e) => {
+    try { await navigator.clipboard.writeText(link); e.target.textContent = "Copied"; } catch {}
+  };
+}
+
+function showError(el, err) {
+  el.innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
+}
+
+$("#form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#submit").disabled = true;
+  try {
+    const entry = token
+      ? await api("PUT", `/api/entries/${encodeURIComponent(token)}`, collect())
+      : await api("POST", "/api/entries", collect());
+    setEditing(entry);
+    showSaved(entry);
+    loadBoard();
+  } catch (err) {
+    showError($("#form-msg"), err);
+  } finally {
+    $("#submit").disabled = false;
+  }
+});
+
+$("#new-entry").addEventListener("click", () => {
+  store.del("entryToken");
+  location.href = location.pathname;
+});
+
+// ---------- leaderboard ----------
+const fmt = (x, digits = 2) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(digits);
+
+let scoring = null; // "log" | "brier", chosen by the viewer
+let lastBoard = null;
+
+async function loadBoard() {
+  lastBoard = await api("GET", "/api/leaderboard");
+  renderBoard();
+  renderMarginBoard();
+}
+
+function renderBoard() {
+  const board = lastBoard;
+  if (!board.closed) {
+    $("#board").innerHTML = board.entrants.length
+      ? `<p>${board.entrants.length} ${board.entrants.length === 1 ? "person has" : "people have"} entered. Picks stay hidden until close.</p>
+         <div class="chips">${board.entrants.map((n) => `<span class="chip">${esc(n)}</span>`).join("")}</div>`
+      : "<p>No entries yet. Be the first.</p>";
+    if (board.crowd) $("#board").innerHTML += crowdPicksChart(board.crowd);
+    return;
+  }
+  if (!board.entries.length) { $("#board").innerHTML = "<p>No one entered.</p>"; return; }
+
+  scoring = scoring || store.get("scoring") || config.default_scoring || "log";
+  const byLog = scoring === "log";
+  const r6 = (x) => Math.round(x * 1e6);
+  const brierOf = (e) => (e.brier === null ? 0.25 : e.brier); // nothing called yet: same as all coin flips
+  // Rank by the chosen score; the other score breaks ties.
+  const cmp = (a, b) => {
+    const log = r6(b.total) - r6(a.total), br = r6(brierOf(a)) - r6(brierOf(b));
+    return (byLog ? log || br : br || log) || a.name.localeCompare(b.name);
+  };
+  const entries = [...board.entries].sort(cmp);
+
+  const called = Object.keys(board.results).length;
+  const head = config.races.map((r) => {
+    const w = board.results[r.id] && candById(r, board.results[r.id]);
+    return `<th class="cell" title="${esc(r.state)}">${esc(r.short || r.id)}<br>${w ? `<span class="p-${esc(colorOf(w))}">${esc(w.short || w.party)}</span>` : "·"}</th>`;
+  }).join("");
+  let rank = 0, prev = null;
+  const rows = entries.map((e, i) => {
+    const key = `${r6(e.total)}|${r6(brierOf(e))}`;
+    if (key !== prev) rank = i + 1;
+    prev = key;
+    const cells = config.races.map((r) => {
+      const p = e.predictions[r.id];
+      const s = e.per_race[r.id];
+      const cls = s ? (s.score > 0 ? "hit" : s.score < 0 ? "miss" : "") : "";
+      if (!p) return `<td class="cell ${cls}">·</td>`;
+      const c = candById(r, p.pick);
+      const tip = s ? `${fmt(s.score)} log · ${s.brier.toFixed(3)} Brier` : "not called yet";
+      return `<td class="cell ${cls}" title="${esc(c.name)}: ${tip}">
+        <span class="p-${esc(colorOf(c))}">${esc(c.short || c.party)}</span> ${Math.round(p.confidence * 100)}</td>`;
+    }).join("");
+    const ss = e.per_race.SEATS;
+    const seatCls = ss ? (ss.score > 0 ? "hit" : ss.score < 0 ? "miss" : "") : "";
+    const seatTip = ss ? `${fmt(ss.score)} log · ${ss.brier.toFixed(3)} Brier` : "not final yet";
+    const seats = e.seats
+      ? `<span class="p-D">${e.seats.D}</span>–<span class="p-R">${e.seats.R}</span>${e.seat_error === null ? "" : ` <span class="muted">(${e.seat_error} off)</span>`}`
+      : "·";
+    const logCell = fmt(e.total), brierCell = e.brier === null ? "–" : e.brier.toFixed(3);
+    return `<tr><td>${rank}</td><td>${esc(e.name)}</td>
+      <td class="num">${byLog ? `<b>${logCell}</b>` : logCell}</td>
+      <td class="num">${byLog ? brierCell : `<b>${brierCell}</b>`}</td>
+      <td class="cell ${seatCls}" title="${seatTip}">${seats}</td>${cells}</tr>`;
+  }).join("");
+  const sr = board.seat_result;
+  $("#board").innerHTML = `
+    <div class="row" style="margin-top:0">
+      <span class="muted">Rank by</span>
+      <div class="seg" role="group" aria-label="Scoring rule">
+        <button type="button" data-scoring="log" aria-pressed="${byLog}">Log score (KL)</button>
+        <button type="button" data-scoring="brier" aria-pressed="${!byLog}">Brier</button>
+      </div>
+      <span class="muted">${byLog ? "Higher is better." : "Lower is better."}</span>
+    </div>
+    <p>${called} of ${config.races.length} questions called${sr ? `. Senate: <span class="p-D">${sr.D} D</span> – <span class="p-R">${sr.R} R</span>` : ""}.
+       The header shows each result; cells show the pick and confidence (green = beat a coin flip).</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Name</th><th class="num">Log (KL)</th><th class="num">Brier</th><th class="cell">Seats D–R</th>${head}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  document.querySelectorAll("[data-scoring]").forEach((b) => b.addEventListener("click", () => {
+    scoring = b.dataset.scoring;
+    store.set("scoring", scoring);
+    renderBoard();
+  }));
+}
+
+// ---------- vote-share bonus ----------
+// Slider value = the first-listed candidate's (D, or Osborn) share of the two-way vote.
+// Every view puts that side on the right, so "right" always means "bluer".
+const marginRaces = () => config.margins.races.map(raceById);
+const sideA = (r) => r.candidates[0]; // D / Osborn
+const sideB = (r) => r.candidates[1]; // R
+const lastName = (c) => c.name.split(" ").pop();
+
+function marginRow(r) {
+  const m = config.margins, a = sideA(r), b = sideB(r);
+  return `
+    <div class="mrow unset" data-mrace="${esc(r.id)}">
+      <div class="mhead"><b>${esc(r.state)}</b><button type="button" class="clear" hidden>clear</button></div>
+      <div class="mnames">
+        <span class="p-${esc(colorOf(b))}">${esc(b.name)}</span>
+        <span class="p-${esc(colorOf(a))}">${esc(a.name)}</span>
+      </div>
+      <div class="mnums"><span class="mnum-b"></span><span class="mnum-a"></span></div>
+      <input type="range" min="${m.min}" max="${m.max}" step="${m.step}" value="50"
+             aria-label="${esc(a.name)} share of the two-way vote in ${esc(r.state)}">
+      <div class="mwin"></div>
+    </div>`;
+}
+
+function updateMarginRow(row) {
+  const r = raceById(row.dataset.mrace), input = row.querySelector("input");
+  const set = input.dataset.set === "1";
+  row.classList.toggle("unset", !set);
+  row.querySelector(".clear").hidden = !set;
+  const a = Number(input.value), b = 100 - a, lead = a - b;
+  const leader = !set || lead === 0 ? null : lead > 0 ? sideA(r) : sideB(r);
+  // Slider takes the leading candidate's color, blended toward gray for close races:
+  // a 1-point margin is mostly gray, and 10+ points (55–45) is full color.
+  const strength = leader ? Math.round(25 + 75 * Math.min(1, Math.abs(lead) / 10)) : 0;
+  row.style.setProperty("--lean", leader
+    ? `color-mix(in srgb, var(--${colorOf(leader)}) ${strength}%, var(--muted))`
+    : "var(--muted)");
+  const nb = row.querySelector(".mnum-b"), na = row.querySelector(".mnum-a");
+  nb.textContent = set ? `${b.toFixed(1)}%` : "–";
+  na.textContent = set ? `${a.toFixed(1)}%` : "–";
+  nb.className = `mnum-b${set ? ` p-${colorOf(sideB(r))}` : ""}`;
+  na.className = `mnum-a${set ? ` p-${colorOf(sideA(r))}` : ""}`;
+  row.querySelector(".mwin").innerHTML = !set
+    ? `<span class="muted">Not set (counts as 50–50)</span>`
+    : leader
+      ? `<span class="p-${esc(colorOf(leader))}">${esc(leader.name)} +${Math.abs(lead).toFixed(1)}</span>`
+      : `<span class="muted">Tied</span>`;
+}
+
+function renderMarginsForm() {
+  $("#margins-note").textContent = config.margins.note;
+  $("#margin-rows").innerHTML = marginRaces().map(marginRow).join("");
+  for (const row of document.querySelectorAll(".mrow")) {
+    const input = row.querySelector("input");
+    input.addEventListener("input", () => { input.dataset.set = "1"; updateMarginRow(row); });
+    row.querySelector(".clear").addEventListener("click", () => {
+      input.dataset.set = ""; input.value = 50; updateMarginRow(row);
+    });
+    updateMarginRow(row);
+  }
+}
+
+function fillMargins(margins) {
+  for (const row of document.querySelectorAll(".mrow")) {
+    const input = row.querySelector("input"), v = margins && margins[row.dataset.mrace];
+    input.dataset.set = v == null ? "" : "1";
+    input.value = v == null ? 50 : v;
+    updateMarginRow(row);
+  }
+}
+
+function collectMargins() {
+  const out = {};
+  for (const row of document.querySelectorAll(".mrow")) {
+    const input = row.querySelector("input");
+    if (input.dataset.set === "1") out[row.dataset.mrace] = Number(input.value);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// ----- charts: crowd (before close) + vote-share leaderboard (after close) -----
+function setupCharts() {
+  let t;
+  window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(renderMarginBoard, 150); });
+  wireHover($("#board"));
+  wireHover($("#margin-board"));
+}
+
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+function niceStep(span, target = 5) {
+  const raw = span / target, p = 10 ** Math.floor(Math.log10(raw)), f = raw / p;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
+}
+
+const leanText = (v) => Math.abs(v) < 0.05 ? "even" : `${Math.abs(v).toFixed(1)} ${v > 0 ? "bluer" : "redder"}`;
+const attr = (s) => esc(s).replace(/`/g, "&#96;");
+const chartWidth = (el) => Math.max(320, el.clientWidth || 900);
+
+// Generic diverging strip chart: one row per question, a dot per person (or anonymous value),
+// a median tick, optional actual-result diamond. Left half washed red, right half blue.
+// rows: [{ label, pts: [{ v, name?, tip }], median?, medianTip?, actual?, actualTip? }]
+function stripSVG(rows, W, { lo, hi, leftLabel, rightLabel, mid = (lo + hi) / 2 }) {
+  const rowH = 32, m = { l: 128, r: 20, t: 8, b: 40 }, ph = rows.length * rowH, H = m.t + ph + m.b;
+  const pw = W - m.l - m.r, x = (v) => m.l + ((v - lo) / (hi - lo)) * pw;
+  const step = niceStep(hi - lo, 6);
+  let g = `<rect class="wash-R" x="${m.l}" y="${m.t}" width="${x(mid) - m.l}" height="${ph}"/>
+           <rect class="wash-D" x="${x(mid)}" y="${m.t}" width="${W - m.r - x(mid)}" height="${ph}"/>`;
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    g += `<line class="grid-line" x1="${x(v)}" x2="${x(v)}" y1="${m.t}" y2="${m.t + ph}"/>
+          <text x="${x(v)}" y="${m.t + ph + 16}" text-anchor="middle">${+v.toFixed(1)}</text>`;
+  }
+  g += `<line class="mid-line" x1="${x(mid)}" x2="${x(mid)}" y1="${m.t}" y2="${m.t + ph}"/>
+        <text x="${m.l}" y="${H - 6}">${esc(leftLabel)}</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(rightLabel)}</text>`;
+  rows.forEach((row, i) => {
+    const cy = m.t + i * rowH + rowH / 2;
+    g += `<text class="lbl" x="${m.l - 10}" y="${cy + 4}" text-anchor="end">${esc(row.label)}</text>`;
+    row.pts.forEach((p, j) => {
+      const cyj = cy + ((j % 3) - 1) * 5; // light jitter so identical values don't hide each other
+      const nm = p.name ? ` data-name="${attr(p.name)}"` : "";
+      g += `<circle class="dot"${nm} cx="${x(p.v)}" cy="${cyj}" r="4"/>
+            <circle class="hit"${nm} data-tip="${attr(p.tip)}" cx="${x(p.v)}" cy="${cyj}" r="9"/>`;
+    });
+    if (row.median != null) {
+      const v = row.median;
+      g += `<line class="consensus" x1="${x(v)}" x2="${x(v)}" y1="${cy - 9}" y2="${cy + 9}"/>
+            <rect class="hit" data-tip="${attr(row.medianTip)}" x="${x(v) - 5}" y="${cy - 10}" width="10" height="20"/>`;
+    }
+    if (row.actual != null) {
+      const cx = x(row.actual), s = 6;
+      g += `<path class="ref" d="M${cx} ${cy - s}L${cx + s} ${cy}L${cx} ${cy + s}L${cx - s} ${cy}Z"/>
+            <circle class="hit" data-tip="${attr(row.actualTip)}" cx="${cx}" cy="${cy}" r="9"/>`;
+    }
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+
+const keyDot = `<span class="key"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--muted)"/></svg>`;
+const keyMedian = `<span class="key"><svg width="6" height="14"><line x1="3" x2="3" y1="1" y2="13" stroke="var(--text)" stroke-width="2"/></svg>group median</span>`;
+const keyActual = `<span class="key"><svg width="12" height="12"><path d="M6 0L12 6L6 12L0 6Z" fill="var(--text)"/></svg>actual result</span>`;
+
+const shareDomain = (values) => {
+  const half = Math.max(8, ...values.map((v) => Math.abs(v - 50))) + 2;
+  return { lo: 50 - half, hi: 50 + half, mid: 50 };
+};
+const shareTip = (r, v) => `${lastName(sideB(r))} ${(100 - v).toFixed(1)} – ${v.toFixed(1)} ${lastName(sideA(r))}`;
+
+// Before close: anonymous crowd view of the main picks (House + Senate) as P(D / Osborn wins).
+function crowdPicksChart(crowd) {
+  const qs = config.races.filter((r) => (r.group === "House" || r.group === "Senate") && (crowd.probs[r.id] || []).length);
+  if (!qs.length) return "";
+  const rows = qs.map((r) => {
+    const vs = crowd.probs[r.id].map((p) => p * 100), a = r.candidates[0];
+    const what = r.group === "House" ? "Democrats win the House" : `${a.name} wins`;
+    return {
+      label: r.state,
+      pts: vs.map((v) => ({ v, tip: `Someone: ${v.toFixed(0)}% that ${what}` })),
+      median: median(vs), medianTip: `Crowd median: ${median(vs).toFixed(0)}% that ${what}`,
+    };
+  });
+  return `
+    <div class="chart">
+      <h3>The crowd so far</h3>
+      <p class="sub">Each dot is one person's chance that the Democrat (or Osborn) wins, built from their pick and confidence.
+        Anonymous until close. ${keyDot}one person</span> ${keyMedian}</p>
+      ${stripSVG(rows, chartWidth($("#board")), { lo: 0, hi: 100, mid: 50, leftLabel: "← R favored", rightLabel: "D (or Osborn) favored →" })}
+    </div>`;
+}
+
+function crowdMarginsChart(crowd) {
+  const races = marginRaces().filter((r) => (crowd.margins[r.id] || []).length);
+  if (!races.length) return `<p class="muted">No vote-share guesses yet.</p>`;
+  const all = races.flatMap((r) => crowd.margins[r.id]);
+  const rows = races.map((r) => {
+    const vs = crowd.margins[r.id];
+    return {
+      label: r.state,
+      pts: vs.map((v) => ({ v, tip: `Someone: ${shareTip(r, v)}` })),
+      median: median(vs), medianTip: `Crowd median: ${shareTip(r, median(vs))}`,
+    };
+  });
+  return `
+    <div class="chart">
+      <h3>Vote-share guesses so far</h3>
+      <p class="sub">Anonymous until close. ${keyDot}one person</span> ${keyMedian}</p>
+      ${stripSVG(rows, chartWidth($("#margin-board")), { ...shareDomain(all), leftLabel: "← R share higher", rightLabel: "D (or Osborn) share higher →" })}
+    </div>`;
+}
+
+function marginStats(people, races, actual, consensus) {
+  const called = races.filter((r) => r.id in actual);
+  const useActual = called.length > 0;
+  return people.map((p) => {
+    const errs = useActual
+      ? called.map((r) => (p.margins[r.id] ?? 50) - actual[r.id])
+      : races.filter((r) => p.margins[r.id] != null && r.id in consensus).map((r) => p.margins[r.id] - consensus[r.id]);
+    const n = errs.length, net = errs.reduce((a, e) => a + e, 0), lean = n ? net / n : 0;
+    return {
+      name: p.name, margins: p.margins, n, lean, net, score: p.total,
+      noise: n ? Math.sqrt(errs.reduce((a, e) => a + (e - lean) ** 2, 0) / n) : 0,
+      off: errs.reduce((a, e) => a + Math.abs(e), 0),
+    };
+  });
+}
+
+function labelPlacer() {
+  const boxes = [];
+  const hits = (b) => boxes.some((o) => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1);
+  return (name, cx, cy, dotBoxes) => {
+    const w = name.length * 6.6 + 4, h = 14;
+    for (const side of [1, -1]) {
+      const x1 = side > 0 ? cx + 8 : cx - 8 - w, b = { x1, x2: x1 + w, y1: cy - h / 2, y2: cy + h / 2 };
+      if (!hits(b) && !dotBoxes.some((d) => b.x1 < d.x + 5 && b.x2 > d.x - 5 && b.y1 < d.y + 5 && b.y2 > d.y - 5)) {
+        boxes.push(b);
+        return `<text class="lbl" data-name="${attr(name)}" x="${side > 0 ? cx + 9 : cx - 9}" y="${cy + 4}" text-anchor="${side > 0 ? "start" : "end"}">${esc(name)}</text>`;
+      }
+    }
+    return "";
+  };
+}
+
+function scatterSVG(stats, W, refLabel) {
+  const H = 300, m = { l: 48, r: 20, t: 14, b: 44 };
+  const xmax = Math.max(2, ...stats.map((s) => Math.abs(s.lean))) * 1.2;
+  const ymax = Math.max(2, ...stats.map((s) => s.noise)) * 1.2;
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const x = (v) => m.l + ((v + xmax) / (2 * xmax)) * pw;
+  const y = (v) => m.t + ph - (v / ymax) * ph;
+  const xs = niceStep(2 * xmax, 6), ys = niceStep(ymax, 4);
+  let g = `<rect class="wash-R" x="${m.l}" y="${m.t}" width="${pw / 2}" height="${ph}"/>
+           <rect class="wash-D" x="${m.l + pw / 2}" y="${m.t}" width="${pw / 2}" height="${ph}"/>`;
+  for (let v = 0; v <= ymax; v += ys) {
+    g += `<line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>
+          <text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
+  }
+  for (let v = -Math.floor(xmax / xs) * xs; v <= xmax; v += xs) {
+    g += `<text x="${x(v)}" y="${H - m.b + 16}" text-anchor="middle">${Math.abs(v) < 1e-9 ? 0 : +Math.abs(v).toFixed(1)}</text>`;
+  }
+  g += `<line class="mid-line" x1="${x(0)}" x2="${x(0)}" y1="${m.t}" y2="${m.t + ph}"/>
+        <text x="${m.l}" y="${H - 6}">← predicted redder than ${refLabel}</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">predicted bluer →</text>
+        <text transform="translate(12 ${m.t + ph / 2}) rotate(-90)" text-anchor="middle">Noise (pts)</text>`;
+  const place = labelPlacer(), dots = stats.map((s) => ({ x: x(s.lean), y: y(s.noise) }));
+  let labels = "";
+  for (const s of stats) {
+    const tip = `${s.name}: ${leanText(s.lean)} · noise ${s.noise.toFixed(1)}`;
+    const cx = x(s.lean), cy = y(s.noise);
+    g += `<circle class="dot" data-name="${attr(s.name)}" cx="${cx}" cy="${cy}" r="5"/>`;
+    if (stats.length <= 15) labels += place(s.name, cx, cy, dots.filter((d) => d.x !== cx || d.y !== cy));
+    g += `<circle class="hit" data-name="${attr(s.name)}" data-tip="${attr(tip)}" cx="${cx}" cy="${cy}" r="13"/>`;
+  }
+  g += labels;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lean versus noise for each person">${g}</svg>`;
+}
+
+function renderMarginBoard() {
+  const board = lastBoard, el = $("#margin-board");
+  if (!board) return;
+  if (!board.closed) {
+    el.innerHTML = board.crowd ? crowdMarginsChart(board.crowd) : `<p class="muted">Vote-share guesses stay hidden until close.</p>`;
+    return;
+  }
+  const races = marginRaces();
+  const people = board.entries.filter((e) => e.margins);
+  if (!people.length) { el.innerHTML = `<p class="muted">Nobody entered vote shares.</p>`; return; }
+  const actual = board.margin_results || {};
+  const consensus = {};
+  races.forEach((r) => {
+    const xs = people.map((p) => p.margins[r.id]).filter((v) => v != null);
+    if (xs.length) consensus[r.id] = median(xs);
+  });
+  const nCalled = races.filter((r) => r.id in actual).length;
+  const useActual = nCalled > 0;
+  const stats = marginStats(people, races, actual, consensus)
+    .sort((a, b) => (useActual ? a.off - b.off : 0) || a.name.localeCompare(b.name));
+  const W = chartWidth(el);
+  const refLabel = useActual ? "the results" : "the group";
+
+  let rank = 0, prev = null;
+  const rows = stats.map((s, i) => {
+    const key = s.off.toFixed(3);
+    if (key !== prev) rank = i + 1;
+    prev = key;
+    const cells = races.map((r) => `<td class="cell">${s.margins[r.id] == null ? "·" : s.margins[r.id].toFixed(1)}</td>`).join("");
+    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rank}</td>` : ""}<td>${esc(s.name)}</td>
+      ${useActual ? `<td class="num"><b>${s.off.toFixed(1)}</b></td>` : ""}
+      <td class="num">${leanText(s.lean)}</td><td class="num">${s.noise.toFixed(1)}</td>${cells}</tr>`;
+  }).join("");
+  const head = races.map((r) => `<th class="cell" title="${esc(r.state)}">${esc(r.id)}<br>${r.id in actual ? actual[r.id].toFixed(1) : "·"}</th>`).join("");
+
+  const all = [...people.flatMap((p) => Object.values(p.margins)), ...Object.values(actual)];
+  const stripRows = races.map((r) => ({
+    label: r.state,
+    pts: people.filter((p) => p.margins[r.id] != null).map((p) => ({
+      v: p.margins[r.id], name: p.name, tip: `${p.name} · ${r.state}: ${shareTip(r, p.margins[r.id])}`,
+    })),
+    median: consensus[r.id], medianTip: consensus[r.id] == null ? "" : `Group median · ${r.state}: ${shareTip(r, consensus[r.id])}`,
+    actual: actual[r.id], actualTip: actual[r.id] == null ? "" : `Actual · ${r.state}: ${shareTip(r, actual[r.id])}`,
+  }));
+
+  el.innerHTML = `
+    <p>${useActual
+      ? `${nCalled} of ${races.length} races have final vote shares. Ranked by total points off; lower is better.`
+      : "No vote shares entered yet. Until results come in, everyone is measured against the group median."}
+      Shares are the D (or Osborn) candidate's percentage of the two-way vote.</p>
+    <div class="chart">
+      <h3>Who's calling a blue wave?</h3>
+      <p class="sub">Each dot is a person. Left to right: your average miss toward one party versus ${refLabel}. Up: how scattered your misses are around that lean.</p>
+      ${scatterSVG(stats, W, refLabel)}
+    </div>
+    <div class="chart">
+      <h3>Everyone's calls, race by race</h3>
+      <p class="sub">${keyDot}one person</span> ${keyMedian} ${useActual ? keyActual : ""} Hover a dot or a table row to follow one person.</p>
+      ${stripSVG(stripRows, W, { ...shareDomain(all), leftLabel: "← R share higher", rightLabel: "D (or Osborn) share higher →" })}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr>${useActual ? "<th>#</th>" : ""}<th>Name</th>${useActual ? `<th class="num">Pts off</th>` : ""}
+        <th class="num">Lean</th><th class="num">Noise</th>${head}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function wireHover(root) {
+  const tip = $("#tip");
+  let current = null;
+  const highlight = (name) => {
+    if (name === current) return;
+    root.querySelectorAll(".hl").forEach((n) => n.classList.remove("hl"));
+    current = name;
+    if (name) root.querySelectorAll(`[data-name="${CSS.escape(name)}"]`).forEach((n) => n.classList.add("hl"));
+  };
+  root.addEventListener("mousemove", (e) => {
+    const t = e.target.closest("[data-tip]");
+    if (t) { tip.hidden = false; tip.textContent = t.dataset.tip; tip.style.left = `${e.clientX}px`; tip.style.top = `${e.clientY}px`; }
+    else tip.hidden = true;
+    const n = e.target.closest("[data-name]");
+    highlight(n ? n.dataset.name : null);
+  });
+  root.addEventListener("mouseleave", () => { tip.hidden = true; highlight(null); });
+}
+
+// ---------- admin ----------
+function renderAdmin() {
+  $("#admin").hidden = false;
+  $("#admin-token").value = store.get("adminToken") || "";
+  $("#admin-races").innerHTML = config.races.map((r) => `
+    <label class="card" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>${esc(r.state)}</span>
+      <select data-race="${esc(r.id)}">
+        <option value="">Not called</option>
+        ${r.candidates.map((c) => `<option value="${esc(c.id)}" ${r.winner === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+      </select>
+    </label>`).join("");
+  $("#admin-margins").innerHTML = marginRaces().map((r) => {
+    const v = config.margins.results[r.id];
+    return `<label class="card" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>${esc(r.state)}</span>
+      <input type="number" data-mrace="${esc(r.id)}" min="0" max="100" step="0.1" style="width:80px" value="${v == null ? "" : v}">
+    </label>`;
+  }).join("");
+  if (config.seats.result) {
+    $("#admin-seats-D").value = config.seats.result.D;
+    $("#admin-seats-R").value = config.seats.result.R;
+  }
+  $("#admin-save").onclick = async () => {
+    const results = {};
+    document.querySelectorAll("#admin-races select").forEach((s) => (results[s.dataset.race] = s.value || null));
+    const d = $("#admin-seats-D").value, r = $("#admin-seats-R").value;
+    const seats = d === "" || r === "" ? null : { D: Number(d), R: Number(r) };
+    const margins = {};
+    document.querySelectorAll("#admin-margins input").forEach((i) => (margins[i.dataset.mrace] = i.value === "" ? null : Number(i.value)));
+    const t = $("#admin-token").value;
+    try {
+      await api("POST", "/api/admin/results", { results, seats, margins }, { Authorization: `Bearer ${t}` });
+      store.set("adminToken", t);
+      $("#admin-msg").innerHTML = `<div class="notice">Results saved.</div>`;
+      loadBoard();
+    } catch (err) {
+      showError($("#admin-msg"), err);
+    }
+  };
+}
+
+// ---------- boot ----------
+(async () => {
+  try {
+    config = await api("GET", "/api/config");
+  } catch (err) {
+    showError($("#status"), err);
+    return;
+  }
+  document.title = config.title;
+  $("#title").textContent = config.title;
+  renderStatus();
+  setInterval(renderStatus, 1000);
+
+  if (!config.closed) {
+    $("#form-section").hidden = false;
+    renderForm();
+    renderMarginsForm();
+    if (token) {
+      try {
+        const entry = await api("GET", `/api/entries/${encodeURIComponent(token)}`);
+        fillForm(entry);
+        setEditing(entry);
+      } catch (err) {
+        if (err.status === 404) { store.del("entryToken"); token = null; }
+        else showError($("#form-msg"), err);
+      }
+    }
+  }
+  setupCharts();
+  setInterval(() => { if (!document.hidden) loadBoard().catch(() => {}); }, 60000);
+  if (location.hash === "#admin") renderAdmin();
+  loadBoard()
+    .then(() => { if (location.hash === "#votes") $("#votes").scrollIntoView(); })
+    .catch((err) => showError($("#board"), err));
+})();
+</script>
+</body>
+</html>
