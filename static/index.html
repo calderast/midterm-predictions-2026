@@ -128,7 +128,8 @@
 
   <section id="form-section" hidden>
     <h2 id="form-heading">Your predictions</h2>
-    <p class="muted" style="margin-top:-6px">Pick an outcome for each question and set how sure you are. For yes/no questions, 50% = coin flip and 99% = near certain. Skipped questions count as a pure guess.</p>
+    <p class="muted" style="margin-top:-6px">Pick an outcome for each question and set how sure you are. For yes/no questions, 50% = coin flip and 99% = near certain.
+       <b>Every question is optional.</b> To opt out of one, leave it blank, or hit "skip" if you already picked. A skipped question counts as a coin flip, which is 0 points under the default log score.</p>
     <form id="form">
       <div class="row">
         <input type="text" id="name" placeholder="Your name" maxlength="40" required autocomplete="nickname">
@@ -190,7 +191,8 @@
           The log score is scaled so a random guess scores 0 and a perfect call scores about 1, the same as any other question.</li>
       <li><b>Senate seat count:</b> an exact guess counts like a 99% correct call, and every 2 seats off halves it.
           Exact: +0.99 · 1 off: +0.49 · 2 off: 0 · 4 off: −1.0. Leaving it blank counts as 2 off.</li>
-      <li>Each rule breaks ties for the other. Skipped questions count as a pure guess.</li>
+      <li>Each rule breaks ties for the other.</li>
+      <li><b>Opting out:</b> every question is optional. A skipped question counts as a pure guess, which is 0 under log score and 0.25 under Brier, so it neither helps nor hurts much. In the vote-share bonus, skipped races aren't counted at all.</li>
       <li><b>Bonus: vote share</b> has its own leaderboard and doesn't affect the main score. For each Senate race you predict
           each side's share of the two-way vote. You're ranked by your average points off across the called races you set, and races you skip don't count.
           You need at least 5 of the called races, or all of them while fewer than 5 have been called.
@@ -310,7 +312,7 @@ function raceCard(r) {
       <div class="picks">${picker}</div>
       <input type="range" min="${minPct(r)}" max="99" step="1" value="${start}" disabled aria-label="Confidence in ${esc(r.state)}">
       <div class="conf-label muted"></div>
-      <button type="button" class="clear" hidden>clear</button>
+      <button type="button" class="clear" hidden>skip this question</button>
     </div>`;
 }
 
@@ -329,7 +331,7 @@ function setPick(card, value) {
 
 function renderSeatsLabel() {
   const d = $("#seats-D").value, r = $("#seats-R").value, total = config.seats.total;
-  if (d === "" || r === "") { $("#seats-label").textContent = "Optional. Blank counts as 2 seats off (a coin flip)."; return; }
+  if (d === "" || r === "") { $("#seats-label").textContent = "Optional: leave blank to skip. Skipping counts as a coin flip (0 points)."; return; }
   const D = Number(d), R = Number(r), other = total - D - R;
   const control = D > R ? "Democratic majority" : R > D ? "Republican majority" : "Tie (the VP breaks it)";
   $("#seats-label").textContent = other < 0
@@ -360,7 +362,7 @@ function renderForm() {
       const pick = getPick(card);
       range.disabled = !pick;
       clear.hidden = !pick;
-      if (!pick) { label.textContent = isMulti(race) ? "No pick (counts as a random guess)" : "No pick (counts as 50/50)"; return; }
+      if (!pick) { label.textContent = "Skipped (optional). Counts as a coin flip, 0 points."; return; }
       const c = candById(race, pick);
       const who = `<span class="p-${esc(colorOf(c))}">${esc(c.name)}</span>`;
       const pct = `<b>${range.value}%</b>`;
@@ -584,7 +586,7 @@ function marginRow(r) {
   const m = config.margins, a = sideA(r), b = sideB(r);
   return `
     <div class="mrow unset" data-mrace="${esc(r.id)}">
-      <div class="mhead"><b>${esc(r.state)}</b><span><span class="lock-note"></span> <button type="button" class="clear" hidden>clear</button></span></div>
+      <div class="mhead"><b>${esc(r.state)}</b><span><span class="lock-note"></span> <button type="button" class="clear" hidden>skip</button></span></div>
       <div class="mnames">
         <span class="p-${esc(colorOf(b))}">${esc(b.name)}</span>
         <span class="p-${esc(colorOf(a))}">${esc(a.name)}</span>
@@ -615,7 +617,7 @@ function updateMarginRow(row) {
   nb.className = `mnum-b${set ? ` p-${colorOf(sideB(r))}` : ""}`;
   na.className = `mnum-a${set ? ` p-${colorOf(sideA(r))}` : ""}`;
   row.querySelector(".mwin").innerHTML = !set
-    ? `<span class="muted">Not set (counts as 50–50)</span>`
+    ? `<span class="muted">Skipped (optional). Not counted.</span>`
     : leader
       ? `<span class="p-${esc(colorOf(leader))}">${esc(leader.name)} +${Math.abs(lead).toFixed(1)}</span>`
       : `<span class="muted">Tied</span>`;

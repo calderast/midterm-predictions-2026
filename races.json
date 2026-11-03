@@ -12,7 +12,7 @@
   "crowd_preview": true,
   "margins": {
     "group": "Senate",
-    "note": "For each race, slide to the share of the two-way vote you expect for each side. Ranked separately by total points off. Unset races count as 50–50.",
+    "note": "For each race, slide to the share of the two-way vote you expect for each side. Optional: skip any race you don't want to call, and skipped races don't count. Ranked separately by average points off.",
     "min": 25, "max": 75, "step": 0.5
   },
   "races": [
