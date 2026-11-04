@@ -11,7 +11,7 @@ import os
 import secrets
 import shutil
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -189,8 +189,12 @@ def clean_margins(raw):
     return out or None
 
 
+GRACE = timedelta(seconds=CONFIG.get("grace_seconds", 60))
+
+
 def late_for(qid, ts):
-    return datetime.fromisoformat(ts) >= LOCKS[qid]
+    """Late = saved after the question's deadline plus a short grace period (default 1 minute)."""
+    return datetime.fromisoformat(ts) >= LOCKS[qid] + GRACE
 
 
 def require_open():
@@ -305,6 +309,7 @@ def crowd_summary(rows):
     return {
         "probs": {k: sorted(round(v, 2) for v in vs) for k, vs in probs.items()},
         "margins": {k: sorted(vs) for k, vs in margins.items()},
+        "seats": sorted([s["D"], s["R"]] for s in (json.loads(r["seats"] or "null") for r in rows) if s),
     }
 
 
@@ -351,7 +356,8 @@ def leaderboard():
 
     # Behavior only (no picks): safe to show before the reveal, used for superlatives.
     meta = [{"name": r["name"], "first_saved": r["created_at"], "last_saved": r["updated_at"],
-             "saves": len(by_entry.get(r["id"], [])) or 1, "answered": len(json.loads(r["predictions"]))}
+             "saves": len(by_entry.get(r["id"], [])) or 1, "answered": len(json.loads(r["predictions"])),
+             "margins_set": len(json.loads(r["margins"] or "null") or {})}
             for r in rows]
 
     if not is_closed():

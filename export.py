@@ -25,6 +25,8 @@ from pathlib import Path
 
 from scoring import brier, forecast, log_score, seat_error, seat_prob
 
+GRACE_DEFAULT = 60
+
 ROOT = Path(__file__).resolve().parent
 
 
@@ -65,6 +67,33 @@ def main():
     seat_result = seat_rows if set(seat_rows) == {"D", "R"} else None
     shares = {r["race_id"]: r["share"] for r in conn.execute("SELECT * FROM margin_results")}
 
+    # Per-question lateness: a pick is late if it differs from the last value saved before
+    # that question's deadline (+ grace). Same rule as the app.
+    from datetime import timedelta
+    grace = timedelta(seconds=cfg.get("grace_seconds", GRACE_DEFAULT))
+    deadline = {q["id"]: datetime.fromisoformat(q.get("locks_at", cfg["closes_at"])) + grace for q in cfg["races"]}
+    deadline["SEATS"] = datetime.fromisoformat(cfg["seats"].get("locks_at", cfg["closes_at"])) + grace
+    hist = {}
+    for v in conn.execute("SELECT * FROM entry_versions ORDER BY saved_at, id"):
+        hist.setdefault(v["entry_id"], []).append(v)
+
+    def late_flags(e):
+        vs = hist.get(e["id"]) or [{**dict(e), "saved_at": e["updated_at"]}]
+        cur_p, cur_m = json.loads(e["predictions"]), json.loads(e["margins"] or "null") or {}
+        flags = {}
+        for qid, t in deadline.items():
+            ok = [v for v in vs if datetime.fromisoformat(v["saved_at"]) < t]
+            if qid == "SEATS":
+                before = json.loads(ok[-1]["seats"] or "null") if ok else None
+                flags[qid] = before != json.loads(e["seats"] or "null")
+                continue
+            bp = json.loads(ok[-1]["predictions"]) if ok else {}
+            bm = (json.loads(ok[-1]["margins"] or "null") or {}) if ok else {}
+            flags[qid] = (bp.get(qid) != cur_p.get(qid), bm.get(qid) != cur_m.get(qid))
+        return flags
+
+    lates = {e["id"]: late_flags(e) for e in entries}
+
     write(out / "entries.csv", ["name", "created_at", "updated_at"],
           [[e["name"], e["created_at"], e["updated_at"]] for e in entries])
 
@@ -86,10 +115,11 @@ def main():
                 round(dist[outcome], 4) if outcome else "",
                 round(log_score(dist[outcome], len(opts)), 4) if outcome else "",
                 round(brier(dist, outcome), 4) if outcome else "",
+                lates[e["id"]][q["id"]][0],
             ])
     write(out / "picks.csv",
           ["name", "question_id", "group", "question", "n_options", "pick_id", "pick_name", "confidence",
-           "p_first_option", "outcome_id", "outcome_name", "p_outcome", "log_score", "brier"], picks)
+           "p_first_option", "outcome_id", "outcome_name", "p_outcome", "log_score", "brier", "late"], picks)
 
     seats = []
     for e in entries:
@@ -99,8 +129,8 @@ def main():
         seats.append([e["name"], s["D"] if s else "", s["R"] if s else "",
                       seat_result["D"] if seat_result else "", seat_result["R"] if seat_result else "",
                       off if off is not None else "",
-                      round(log_score(p), 4) if p else "", round((1 - p) ** 2, 4) if p else ""])
-    write(out / "seats.csv", ["name", "pred_D", "pred_R", "actual_D", "actual_R", "seats_off", "log_score", "brier"], seats)
+                      round(log_score(p), 4) if p else "", round((1 - p) ** 2, 4) if p else "", lates[e["id"]]["SEATS"]])
+    write(out / "seats.csv", ["name", "pred_D", "pred_R", "actual_D", "actual_R", "seats_off", "log_score", "brier", "late"], seats)
 
     vs = []
     for e in entries:
@@ -110,10 +140,11 @@ def main():
             pred, act = m.get(rid), shares.get(rid)
             vs.append([e["name"], rid, r["state"], r["candidates"][0]["name"], r["candidates"][1]["name"],
                        pred if pred is not None else "", act if act is not None else "",
-                       round(pred - act, 2) if pred is not None and act is not None else ""])
+                       round(pred - act, 2) if pred is not None and act is not None else "",
+                       lates[e["id"]][rid][1]])
     write(out / "vote_shares.csv",
           ["name", "race_id", "state", "first_candidate", "second_candidate",
-           "pred_first_share", "actual_first_share", "error_bluer_positive"], vs)
+           "pred_first_share", "actual_first_share", "error_bluer_positive", "late"], vs)
 
     versions = conn.execute("SELECT * FROM entry_versions ORDER BY saved_at, id").fetchall()
     on_time_until = datetime.fromisoformat(os.environ.get("ON_TIME_UNTIL", cfg.get("on_time_until", cfg["closes_at"])))

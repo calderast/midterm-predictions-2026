@@ -10,6 +10,7 @@
   },
   "default_scoring": "log",
   "crowd_preview": true,
+  "grace_seconds": 60,
   "margins": {
     "group": "Senate",
     "note": "For each race, slide to the share of the two-way vote you expect for each side. Optional: skip any race you don't want to call, and skipped races don't count. Ranked separately by average points off.",

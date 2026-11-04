@@ -97,10 +97,12 @@
   .chart .lbl { fill: var(--text); font-size: 12px; }
   .chart .grid-line { stroke: var(--border); stroke-width: 1; }
   .chart .mid-line { stroke: var(--muted); stroke-width: 1; }
-  .chart .wash-D { fill: var(--D); opacity: 0.07; } .chart .wash-R { fill: var(--R); opacity: 0.07; }
+.chart .wash-D { fill: var(--D); opacity: 0.07; }
+  .chart .wash-X { fill: var(--X); opacity: 0.08; } .chart .wash-Y { fill: var(--Y); opacity: 0.08; } .chart .wash-R { fill: var(--R); opacity: 0.07; }
   .chart .dot { fill: var(--muted); stroke: var(--surface); stroke-width: 2; cursor: default; }
   .chart .dot.hl { fill: var(--I); r: 6px; }
   .chart .ref { fill: var(--text); stroke: var(--surface); stroke-width: 2; }
+  .chart .consensus-tri { fill: var(--text); }
   .chart .consensus { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
   .chart .hit { fill: transparent; }
   .chart .wash-R, .chart .wash-D { stroke: none; }
@@ -116,6 +118,8 @@
   .lock-note { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
   .mhead .lock-note { margin: 0; }
   .lock-note.past { color: var(--Y); font-weight: 600; }
+  .late-chip { cursor: pointer; font: inherit; font-size: 13px; color: var(--text); }
+  .late-chip[aria-pressed=true] { background: var(--Y); border-color: var(--Y); color: var(--on-pick); font-weight: 600; }
   .late-mark { font-size: 9px; color: var(--Y); font-weight: 700; margin-left: 2px; }
   .awards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
   .award { display: flex; gap: 12px; align-items: flex-start; background: var(--surface); border: 1px solid var(--border);
@@ -207,9 +211,9 @@
           You need at least 5 of the called races, or all of them while fewer than 5 have been called.
           <i>Lean</i> is your average miss toward one party (did you expect a bigger blue wave than happened?), and
           <i>noise</i> is how scattered your misses are around that lean.</li>
-      <li><b>Deadlines:</b> each question is due when the first polls close in that state. National questions are due at the first 7pm ET closings.
-          You can still change a pick after its deadline, but the change is marked late. By default the leaderboard uses the last pick you saved before each deadline,
-          and you can switch it to include late changes. Every save is timestamped. The leaderboard is revealed once the last polls close.</li>
+      <li><b>Deadlines:</b> each question is due when the first polls close in that state, with a 1-minute grace period. National questions are due at the first 7pm ET closings.
+          You can still change a pick after its deadline, and it counts, but it's recorded as late. Every save is timestamped.
+          The leaderboard is revealed once the last polls close.</li>
       <li>Nobody can see anyone else's picks until predictions close.</li>
     </ul>
   </section>
@@ -273,7 +277,7 @@ function renderStatus() {
   const next = config.races.map((r) => new Date(r.locks_at)).filter((t) => t > Date.now()).sort((a, b) => a - b)[0];
   const nextQs = next ? config.races.filter((r) => +new Date(r.locks_at) === +next).map((r) => r.state) : [];
   const nextWhen = next ? next.toLocaleString([], { timeStyle: "short" }) : "";
-  $("#status").innerHTML = `Each question's deadline is when its polls close. You can still change it after that, but the change is marked late. ` +
+  $("#status").innerHTML = `Each question's deadline is when its polls close. You can still change it after that, but the change is recorded as late. ` +
     (next ? `Next deadline: <b>${esc(nextQs.join(", "))}</b> at <b>${esc(nextWhen)}</b>. ` : "") +
     `The leaderboard is revealed after the last polls close, ${esc(when)} (${left} left). Share this page's link to invite people.`;
   applyLocks();
@@ -292,7 +296,7 @@ function applyLocks() {
     if (!el) return;
     const past = isLocked(t);
     el.classList.toggle("past", past);
-    el.textContent = past ? (short ? "Late now" : "Polls closed: changes now are marked late")
+    el.textContent = past ? (short ? "Late now" : "Polls closed: changes now are recorded as late")
                           : (short ? `Due ${lockTime(t)}` : `Due by ${lockTime(t)} (polls close)`);
   };
   for (const card of document.querySelectorAll(".race[data-race]")) label(card.querySelector(".lock-note"), raceById(card.dataset.race).locks_at);
@@ -431,7 +435,7 @@ function showSaved(entry) {
   $("#form-msg").innerHTML = `
     <div class="notice">
       <b>Saved.</b> ${Object.keys(entry.predictions).length} of ${config.races.length} questions answered${entry.seats ? "" : ", seat count left blank"}.
-      ${config.races.some((r) => isLocked(r.locks_at)) ? "Questions past their deadline keep your earlier pick in the default ranking. Any change you just made to them is marked late." : ""}
+      ${config.races.some((r) => isLocked(r.locks_at)) ? "Changes to questions past their deadline still count, but they're recorded as late." : ""}
       Bookmark your private edit link to change your picks before close:
       <div class="row" style="margin:8px 0 0">
         <span class="link">${esc(link)}</span>
@@ -473,24 +477,59 @@ $("#new-entry").addEventListener("click", () => {
 const fmt = (x, digits = 2) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(digits);
 
 let scoring = null; // "log" | "brier", chosen by the viewer
-let includeLate = false;
-const boardEntries = () => (includeLate ? lastBoard.entries_with_late : lastBoard.entries) || [];
-const lateBadge = (e) => (e.late ? ` <span class="late" title="Saved ${esc(new Date(e.saved_at).toLocaleTimeString([], { timeStyle: "short" }))}">late</span>` : "");
+// Late picks are handled per question: by default every question uses each person's last pick
+// saved before its own deadline. The viewer can accept late changes for specific questions.
+const acceptLate = new Set();
+const qName = (q) => (q === "SEATS" ? "Seat count" : (raceById(q) || {}).state || q);
+
+function boardEntries() {
+  // Everyone's latest picks count. Late changes are only recorded on the back end (API, versions.csv, picks.csv).
+  return lastBoard.entries_with_late || lastBoard.entries || [];
+}
+function onTimeEntries_unused() {
+  const on = lastBoard.entries || [], latest = lastBoard.entries_with_late || [];
+  const latestBy = Object.fromEntries(latest.map((e) => [e.name, e]));
+  return on.map((o) => {
+    const lt = latestBy[o.name];
+    const used = ((lt && lt.late_questions) || []).filter((q) => acceptLate.has(q));
+    if (!used.length) return o;
+    const src = (q) => (used.includes(q) ? lt : o);
+    const predictions = {}, per_race = {}, margins = {};
+    for (const r of config.races) {
+      const e = src(r.id);
+      if (e.predictions[r.id]) predictions[r.id] = e.predictions[r.id];
+      if (e.per_race[r.id]) per_race[r.id] = e.per_race[r.id];
+      if (e.margins && e.margins[r.id] != null) margins[r.id] = e.margins[r.id];
+    }
+    const se = src("SEATS");
+    if (se.per_race.SEATS) per_race.SEATS = se.per_race.SEATS;
+    const vals = Object.values(per_race);
+    return {
+      ...o, predictions, per_race, margins: Object.keys(margins).length ? margins : null,
+      seats: se.seats, seat_error: se.seat_error, late_used: used,
+      total: vals.reduce((t, v) => t + v.score, 0),
+      brier: vals.length ? vals.reduce((t, v) => t + v.brier, 0) / vals.length : null,
+    };
+  });
+}
+
 function lateToggle() {
-  const nLate = (lastBoard.entries_with_late || []).filter((e) => e.late).length;
-  if (!nLate) return "";
+  return ""; // late handling happens after the fact, from the exports
+  const counts = {};
+  (lastBoard.entries_with_late || []).forEach((e) => (e.late_questions || []).forEach((q) => (counts[q] = (counts[q] || 0) + 1)));
+  const qs = Object.keys(counts);
+  if (!qs.length) return "";
   return `<div class="row" style="margin-top:0">
-      <span class="muted">Picks</span>
-      <div class="seg" role="group" aria-label="Late picks">
-        <button type="button" data-late="0" aria-pressed="${!includeLate}">On time only</button>
-        <button type="button" data-late="1" aria-pressed="${includeLate}">Include late (${nLate})</button>
-      </div>
-      <span class="muted">${includeLate ? "Using everyone's latest picks. Changes made after a deadline are marked late." : "For each question, using the last pick saved before its polls closed."}</span>
+      <span class="muted">Late changes</span>
+      <div class="chips">${qs.map((q) => `<button type="button" class="chip late-chip" data-lateq="${esc(q)}" aria-pressed="${acceptLate.has(q)}"
+          title="${acceptLate.has(q) ? "Counting" : "Ignoring"} changes made after this question's deadline">${esc(qName(q))} · ${counts[q]}</button>`).join("")}</div>
+      <span class="muted">${acceptLate.size ? "Highlighted questions count late changes." : "Ignored by default. Click a question to count its late changes."}</span>
     </div>`;
 }
 function wireLateToggle(root) {
-  root.querySelectorAll("[data-late]").forEach((b) => b.addEventListener("click", () => {
-    includeLate = b.dataset.late === "1";
+  root.querySelectorAll("[data-lateq]").forEach((b) => b.addEventListener("click", () => {
+    const q = b.dataset.lateq;
+    acceptLate.has(q) ? acceptLate.delete(q) : acceptLate.add(q);
     renderBoard();
     renderMarginBoard();
     renderSuperlatives();
@@ -510,9 +549,9 @@ function renderBoard() {
   if (!board.closed) {
     $("#board").innerHTML = board.entrants.length
       ? `<p>${board.entrants.length} ${board.entrants.length === 1 ? "person has" : "people have"} entered. Picks stay hidden until close.</p>
-         <div class="chips">${board.entrants.map((n) => `<span class="chip">${esc(n)}${(board.late || []).includes(n) ? ` <span class="late">late</span>` : ""}</span>`).join("")}</div>`
+         <div class="chips">${board.entrants.map((n) => `<span class="chip">${esc(n)}</span>`).join("")}</div>`
       : "<p>No entries yet. Be the first.</p>";
-    if (board.crowd) $("#board").innerHTML += crowdPicksChart(board.crowd);
+    if (board.crowd) $("#board").innerHTML += picksCharts({ crowd: board.crowd });
     return;
   }
   if (!board.entries.length && !(board.entries_with_late || []).length) { $("#board").innerHTML = "<p>No one entered.</p>"; return; }
@@ -544,7 +583,7 @@ function renderBoard() {
       const cls = s ? (s.score > 0 ? "hit" : s.score < 0 ? "miss" : "") : "";
       if (!p) return `<td class="cell ${cls}">·</td>`;
       const c = candById(r, p.pick);
-      const lateQ = includeLate && (e.late_questions || []).includes(r.id);
+      const lateQ = false;
       const tip = (s ? `${fmt(s.score)} log · ${s.brier.toFixed(3)} Brier` : "not called yet") + (lateQ ? " · changed after deadline" : "");
       return `<td class="cell ${cls}" title="${esc(c.name)}: ${tip}">
         <span class="p-${esc(colorOf(c))}">${esc(c.short || c.party)}</span> ${Math.round(p.confidence * 100)}${lateQ ? `<sup class="late-mark">late</sup>` : ""}</td>`;
@@ -556,7 +595,7 @@ function renderBoard() {
       ? `<span class="p-D">${e.seats.D}</span>–<span class="p-R">${e.seats.R}</span>${e.seat_error === null ? "" : ` <span class="muted">(${e.seat_error} off)</span>`}`
       : "·";
     const logCell = fmt(e.total), brierCell = e.brier === null ? "–" : e.brier.toFixed(3);
-    return `<tr><td>${rank}</td><td>${esc(e.name)}${lateBadge(e)}</td>
+    return `<tr data-name="${attr(e.name)}"><td>${rank}</td><td>${esc(e.name)}</td>
       <td class="num">${byLog ? `<b>${logCell}</b>` : logCell}</td>
       <td class="num">${byLog ? brierCell : `<b>${brierCell}</b>`}</td>
       <td class="cell ${seatCls}" title="${seatTip}">${seats}</td>${cells}</tr>`;
@@ -576,7 +615,8 @@ function renderBoard() {
     <div class="table-wrap"><table>
       <thead><tr><th>#</th><th>Name</th><th class="num">Log (KL)</th><th class="num">Brier</th><th class="cell">Seats D–R</th>${head}</tr></thead>
       <tbody>${rows}</tbody>
-    </table></div>`;
+    </table></div>
+    ${picksCharts({ entries, results: board.results })}`;
   wireLateToggle($("#board"));
   document.querySelectorAll("[data-scoring]").forEach((b) => b.addEventListener("click", () => {
     scoring = b.dataset.scoring;
@@ -690,20 +730,21 @@ const chartWidth = (el) => Math.max(320, el.clientWidth || 900);
 // Generic diverging strip chart: one row per question, a dot per person (or anonymous value),
 // a median tick, optional actual-result diamond. Left half washed red, right half blue.
 // rows: [{ label, pts: [{ v, name?, tip }], median?, medianTip?, actual?, actualTip? }]
-function stripSVG(rows, W, { lo, hi, leftLabel, rightLabel, mid = (lo + hi) / 2 }) {
-  const narrow = W < 520; // phones: state abbreviations and short captions
-  const rowH = 32, m = { l: narrow ? 40 : 128, r: narrow ? 12 : 20, t: 8, b: 40 }, ph = rows.length * rowH, H = m.t + ph + m.b;
+function stripSVG(rows, W, { lo, hi, leftLabel, rightLabel, mid = (lo + hi) / 2, washL = "wash-R", washR = "wash-D",
+                              narrowLeft = "← R", narrowRight = "D →", labelWidth = 128 }) {
+  const narrow = W < 520; // phones: abbreviations and short captions
+  const rowH = 32, m = { l: narrow ? 52 : labelWidth, r: narrow ? 12 : 20, t: 8, b: 40 }, ph = rows.length * rowH, H = m.t + ph + m.b;
   const pw = W - m.l - m.r, x = (v) => m.l + ((v - lo) / (hi - lo)) * pw;
   const step = niceStep(hi - lo, 6);
-  let g = `<rect class="wash-R" x="${m.l}" y="${m.t}" width="${x(mid) - m.l}" height="${ph}"/>
-           <rect class="wash-D" x="${x(mid)}" y="${m.t}" width="${W - m.r - x(mid)}" height="${ph}"/>`;
+  let g = `<rect class="${washL}" x="${m.l}" y="${m.t}" width="${x(mid) - m.l}" height="${ph}"/>
+           <rect class="${washR}" x="${x(mid)}" y="${m.t}" width="${W - m.r - x(mid)}" height="${ph}"/>`;
   for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
     g += `<line class="grid-line" x1="${x(v)}" x2="${x(v)}" y1="${m.t}" y2="${m.t + ph}"/>
           <text x="${x(v)}" y="${m.t + ph + 16}" text-anchor="middle">${+v.toFixed(1)}</text>`;
   }
   g += `<line class="mid-line" x1="${x(mid)}" x2="${x(mid)}" y1="${m.t}" y2="${m.t + ph}"/>
-        <text x="${m.l}" y="${H - 6}">${esc(narrow ? "← R" : leftLabel)}</text>
-        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(narrow ? "D →" : rightLabel)}</text>`;
+        <text x="${m.l}" y="${H - 6}">${esc(narrow ? narrowLeft : leftLabel)}</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(narrow ? narrowRight : rightLabel)}</text>`;
   rows.forEach((row, i) => {
     const cy = m.t + i * rowH + rowH / 2;
     g += `<text class="lbl" x="${m.l - 8}" y="${cy + 4}" text-anchor="end">${esc(narrow ? row.short || row.label : row.label)}</text>`;
@@ -737,26 +778,107 @@ const shareDomain = (values) => {
 };
 const shareTip = (r, v) => `${lastName(sideB(r))} ${(100 - v).toFixed(1)} – ${v.toFixed(1)} ${lastName(sideA(r))}`;
 
-// Before close: anonymous crowd view of the main picks (House + Senate) as P(D / Osborn wins).
-function crowdPicksChart(crowd) {
-  const qs = config.races.filter((r) => (r.group === "House" || r.group === "Senate") && (crowd.probs[r.id] || []).length);
-  if (!qs.length) return "";
-  const rows = qs.map((r) => {
-    const vs = crowd.probs[r.id].map((p) => p * 100), a = r.candidates[0];
-    const what = r.group === "House" ? "Democrats win the House" : `${a.name} wins`;
+// Picks as "chance of the first-listed option": anonymous crowd before close, named (with results) after.
+function picksRows(qs, { crowd, entries, results }) {
+  return qs.map((r) => {
+    const a = r.candidates[0];
+    const pts = crowd
+      ? (crowd.probs[r.id] || []).map((p) => ({ v: p * 100, tip: `Someone: ${(p * 100).toFixed(0)}% on ${a.name}` }))
+      : entries.filter((e) => e.predictions[r.id]).map((e) => {
+          const p = e.predictions[r.id], v = (p.pick === a.id ? p.confidence : 1 - p.confidence) * 100;
+          return { v, name: e.name, tip: `${e.name}: ${v.toFixed(0)}% on ${a.name}` };
+        });
+    if (!pts.length) return null;
+    const med = median(pts.map((p) => p.v)), out = results && results[r.id];
     return {
-      label: r.state, short: r.short || r.id,
-      pts: vs.map((v) => ({ v, tip: `Someone: ${v.toFixed(0)}% that ${what}` })),
-      median: median(vs), medianTip: `Crowd median: ${median(vs).toFixed(0)}% that ${what}`,
+      label: r.chart_label || r.state, short: r.short || r.id, pts,
+      median: med, medianTip: `${crowd ? "Crowd" : "Group"} median: ${med.toFixed(0)}% on ${a.name}`,
+      actual: out ? (out === a.id ? 100 : 0) : null, actualTip: out ? `Result: ${candById(r, out).name}` : "",
     };
+  }).filter(Boolean);
+}
+
+
+// Senate balance: a dot histogram of predicted Democratic seats. Republicans hold the VP tiebreak,
+// so 51+ D seats is a Democratic majority. pts: [{ d, r, name? }]
+function seatsSVG(pts, W, actual) {
+  const vals = pts.map((p) => p.d).concat(actual ? [actual.D] : []);
+  const lo = Math.min(45, ...vals) - 1, hi = Math.max(55, ...vals) + 1, n = hi - lo + 1;
+  const counts = {};
+  pts.forEach((p) => (counts[p.d] = (counts[p.d] || 0) + 1));
+  const maxStack = Math.max(3, ...Object.values(counts));
+  const dot = 12, m = { l: 16, r: 16, t: actual ? 24 : 10, b: 46 };
+  const ph = maxStack * dot + 6, H = m.t + ph + m.b, pw = W - m.l - m.r, bw = pw / n;
+  const x = (d) => m.l + (d - lo + 0.5) * bw, base = m.t + ph, split = m.l + (50.5 - lo + 0.5) * bw;
+  let g = `<rect class="wash-R" x="${m.l}" y="${m.t}" width="${split - m.l}" height="${ph}"/>
+           <rect class="wash-D" x="${split}" y="${m.t}" width="${W - m.r - split}" height="${ph}"/>
+           <line class="mid-line" x1="${split}" x2="${split}" y1="${m.t}" y2="${base}"/>
+           <line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${base}" y2="${base}"/>`;
+  const every = bw < 22 ? 2 : 1;
+  for (let d = lo; d <= hi; d++) {
+    if ((d - lo) % every === 0 || d === 50 || d === 51) g += `<text x="${x(d)}" y="${base + 16}" text-anchor="middle">${d}</text>`;
+  }
+  const seen = {};
+  pts.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).forEach((p) => {
+    const k = (seen[p.d] = (seen[p.d] || 0) + 1);
+    const cy = base - (k - 0.5) * dot, nm = p.name ? ` data-name="${attr(p.name)}"` : "";
+    const tip = `${p.name || "Someone"}: ${p.d} D – ${p.r} R`;
+    g += `<circle class="dot"${nm} cx="${x(p.d)}" cy="${cy}" r="${Math.min(5, dot / 2 - 1)}"/>
+          <circle class="hit"${nm} data-tip="${attr(tip)}" cx="${x(p.d)}" cy="${cy}" r="${dot / 2 + 2}"/>`;
   });
+  if (pts.length) {
+    const med = median(pts.map((p) => p.d)), mx = x(med);
+    g += `<line class="consensus" x1="${mx}" x2="${mx}" y1="${base + 2}" y2="${base + 4}"/>
+          <path class="consensus-tri" d="M${mx} ${base + 1}L${mx + 5} ${base + 8}L${mx - 5} ${base + 8}Z"/>
+          <rect class="hit" data-tip="${attr(`Group median: ${med} D seats`)}" x="${mx - 7}" y="${base}" width="14" height="10"/>`;
+  }
+  if (actual) {
+    const ax = x(actual.D), s = 6;
+    g += `<path class="ref" d="M${ax} ${m.t - 16}L${ax + s} ${m.t - 10}L${ax} ${m.t - 4}L${ax - s} ${m.t - 10}Z"/>
+          <circle class="hit" data-tip="${attr(`Actual: ${actual.D} D – ${actual.R} R`)}" cx="${ax}" cy="${m.t - 10}" r="9"/>`;
+  }
+  g += `<text x="${m.l}" y="${H - 6}">← Republican control</text>
+        <text x="${W - m.r}" y="${H - 6}" text-anchor="end">Democratic majority (51+) →</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Predicted Democratic Senate seats">${g}</svg>`;
+}
+
+function seatsChart(src) {
+  const pts = src.crowd
+    ? (src.crowd.seats || []).map(([d, r]) => ({ d, r }))
+    : (src.entries || []).filter((e) => e.seats).map((e) => ({ d: e.seats.D, r: e.seats.R, name: e.name }));
+  if (!pts.length) return "";
+  const actual = src.crowd ? null : lastBoard && lastBoard.seat_result;
+  const dCtrl = pts.filter((p) => p.d >= 51).length;
   return `
     <div class="chart">
-      <h3>The crowd so far</h3>
-      <p class="sub">Each dot is one person's chance that the Democrat (or Osborn) wins, built from their pick and confidence.
-        Anonymous until close. ${keyDot}one person</span> ${keyMedian}</p>
-      ${stripSVG(rows, chartWidth($("#board")), { lo: 0, hi: 100, mid: 50, leftLabel: "← R favored", rightLabel: "D (or Osborn) favored →" })}
+      <h3>Senate balance</h3>
+      <p class="sub">Predicted Democratic seats. Each dot is one person${src.crowd ? ", anonymous until the reveal" : ""}.
+        ${dCtrl} of ${pts.length} expect a Democratic majority. ▲ group median ${actual ? `· ${keyActual}` : ""}</p>
+      ${seatsSVG(pts, chartWidth($("#board")), actual)}
     </div>`;
+}
+
+function picksCharts(src) {
+  const W = chartWidth($("#board"));
+  const anon = src.crowd ? " Anonymous until the reveal." : "";
+  const key = `${keyDot}${src.crowd ? "one person" : "one person (hover or tap)"}</span> ${keyMedian} ${src.results ? keyActual : ""}`;
+  let html = seatsChart(src);
+  const national = picksRows(config.races.filter((r) => r.group === "House" || r.group === "Senate"), src);
+  if (national.length) html += `
+    <div class="chart">
+      <h3>${src.crowd ? "The crowd so far" : "Everyone's calls: House and Senate"}</h3>
+      <p class="sub">Each dot is one person's chance that the Democrat (or Osborn) wins, built from their pick and confidence.${anon} ${key}</p>
+      ${stripSVG(national, W, { lo: 0, hi: 100, mid: 50, leftLabel: "← R favored", rightLabel: "D (or Osborn) favored →" })}
+    </div>`;
+  const local = picksRows(config.races.filter((r) => r.group === "Local"), src);
+  if (local.length) html += `
+    <div class="chart">
+      <h3>California &amp; San Francisco</h3>
+      <p class="sub">Chance of Yes on each prop, or of Wiener (vs. Chan) in CA-11.${anon} ${key}</p>
+      ${stripSVG(local, W, { lo: 0, hi: 100, mid: 50, washL: "wash-Y", washR: "wash-X", labelWidth: 150,
+                             leftLabel: "← No / Chan favored", rightLabel: "Yes / Wiener favored →", narrowLeft: "← No/Chan", narrowRight: "Yes/Wiener →" })}
+    </div>`;
+  return html;
 }
 
 function crowdMarginsChart(crowd) {
@@ -877,7 +999,7 @@ function renderMarginBoard() {
     prev = key;
     const rankCell = s.ranked ? rank : `<span class="muted" title="Set fewer than ${need} of the called races">–</span>`;
     const cells = races.map((r) => `<td class="cell">${s.margins[r.id] == null ? "·" : s.margins[r.id].toFixed(1)}</td>`).join("");
-    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rankCell}</td>` : ""}<td>${esc(s.name)}${s.late ? ` <span class="late">late</span>` : ""}</td>
+    return `<tr data-name="${attr(s.name)}">${useActual ? `<td>${rankCell}</td>` : ""}<td>${esc(s.name)}</td>
       ${useActual ? `<td class="num"><b>${s.off.toFixed(1)}</b></td>` : ""}
       <td class="num">${leanText(s.lean)}</td><td class="num">${s.noise.toFixed(1)}</td>${cells}</tr>`;
   }).join("");
@@ -976,6 +1098,12 @@ function behaviorAwards(meta) {
   if (sel && sel.v < total) out.push({ emoji: "🧐", title: "Most selective", who: nameList(sel.winners), detail: `Only answered ${sel.v} of ${total} questions` });
   const all = meta.filter((m) => m.answered === total);
   if (all.length) out.push({ emoji: "📚", title: "Completionist", who: nameList(all), detail: `Answered all ${total} questions` });
+  // Bonus effort: filled in the optional vote-share sliders.
+  const nRaces = config.margins.races.length;
+  const fullM = meta.filter((m) => m.margins_set === nRaces);
+  const mostM = bestOf(meta.filter((m) => m.margins_set), (m) => m.margins_set, "max", 3);
+  if (fullM.length) out.push({ emoji: "🚀", title: "Above and beyond", who: nameList(fullM), detail: `Also called the vote share in all ${nRaces} Senate races` });
+  else if (mostM) out.push({ emoji: "🚀", title: "Above and beyond", who: nameList(mostM.winners), detail: `Also called the vote share in ${mostM.v} Senate races` });
   return out;
 }
 
@@ -994,6 +1122,8 @@ function pickAwards(entries, results) {
       name: e.name, e,
       avgConf: confs.length >= 3 ? confs.reduce((a, b) => a + b, 0) / confs.length : null,
       flips: answered.filter((r) => e.predictions[r.id].confidence <= 0.5).length,
+      // 65% is where the slider starts, so these are picks where the slider was never touched.
+      defaults: answered.filter((r) => Math.abs(e.predictions[r.id].confidence - 0.65) < 1e-9).length,
       sure: answered.filter((r) => e.predictions[r.id].confidence >= 0.95).length,
       blue: pFirst.length >= 3 ? pFirst.reduce((a, b) => a + b, 0) / pFirst.length : null,
     };
@@ -1005,6 +1135,8 @@ function pickAwards(entries, results) {
   if (hedge && conf && hedge.v < conf.v) out.push({ emoji: "🤷", title: "Fence sitter", who: nameList(hedge.winners), detail: `Average confidence ${Math.round(hedge.v * 100)}%` });
   const sure = bestOf(stats, (s) => s.sure, "max", 3);
   if (sure) out.push({ emoji: "💯", title: "No doubt about it", who: nameList(sure.winners), detail: `${sure.v} picks at 95% or higher` });
+  const lazy = bestOf(stats, (s) => s.defaults, "max", 3);
+  if (lazy) out.push({ emoji: "🛋️", title: "Set it and forget it", who: nameList(lazy.winners), detail: `${lazy.v} picks left at the default 65%` });
   const flips = bestOf(stats, (s) => s.flips, "max", 2);
   if (flips) out.push({ emoji: "🪙", title: "Coin flipper", who: nameList(flips.winners), detail: `${flips.v} picks at a straight 50%` });
   const blue = bestOf(stats, (s) => s.blue, "max");
