@@ -146,22 +146,22 @@
        <b>Every question is optional.</b> To opt out of one, leave it blank, or hit "skip" if you already picked. A skipped question counts as a coin flip, which is 0 points under the default log score.</p>
     <form id="form">
       <div class="row">
-        <input type="text" id="name" placeholder="Your name" maxlength="40" required autocomplete="nickname">
+        <input type="text" id="name" placeholder="Nickname" aria-label="Nickname" maxlength="40" required autocomplete="nickname">
       </div>
       <div id="tab-main">
-      <h3 class="group-heading">House</h3>
-      <div id="races-House" class="grid"></div>
-      <h3 class="group-heading">Senate balance</h3>
+      <h3 class="group-heading">Control of Congress</h3>
       <div class="grid">
+        <!-- House card renders here; display: contents makes it a sibling of the seat-count card in the grid -->
+        <div id="races-House" style="display: contents"></div>
         <div class="card race" id="seats-card">
           <h3>Senate seat count</h3>
           <div class="note" id="seats-note"></div>
+          <div class="lock-note"></div>
           <div class="seat-inputs">
             <label class="p-D">D <input type="number" id="seats-D" min="0" max="100" step="1" inputmode="numeric"></label>
             <label class="p-R">R <input type="number" id="seats-R" min="0" max="100" step="1" inputmode="numeric"></label>
           </div>
           <div class="conf-label muted" id="seats-label"></div>
-          <div class="lock-note"></div>
         </div>
       </div>
       <h3 class="group-heading">Senate races</h3>

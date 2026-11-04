@@ -128,7 +128,7 @@ def get_margin_results(conn):
 def clean_name(raw):
     name = " ".join(str(raw or "").split())
     if not 1 <= len(name) <= 40:
-        raise ApiError(400, "Name must be 1–40 characters")
+        raise ApiError(400, "Nickname must be 1–40 characters")
     return name
 
 
@@ -243,7 +243,7 @@ def create_entry(body):
             )
             save_version(conn, cur.lastrowid, name, preds, seats, margins, ts)
     except sqlite3.IntegrityError:
-        raise ApiError(409, "That name is taken. If it's you, open your edit link instead.")
+        raise ApiError(409, "That nickname is taken. If it's you, open your edit link instead.")
     return entry_json(token, name, preds, seats, margins)
 
 
@@ -288,7 +288,7 @@ def update_entry(token, body):
             )
             save_version(conn, row["id"], name, preds, seats, margins, ts)
     except sqlite3.IntegrityError:
-        raise ApiError(409, "That name is taken")
+        raise ApiError(409, "That nickname is taken")
     return entry_json(token, name, preds, seats, margins)
 
 
