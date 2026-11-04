@@ -118,9 +118,15 @@
          padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
   .late { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
           border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
-  .lock-note { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+  .race { position: relative; }
+  .race h3 { padding-right: 84px; }
+  .lock-note { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px;
+               padding: 0 7px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .race > .lock-note { position: absolute; top: 12px; right: 12px; }
   .mhead .lock-note { margin: 0; }
-  .lock-note.past { color: var(--Y); font-weight: 600; }
+  .lock-note.past { color: var(--Y); border-color: var(--Y); font-weight: 600; }
+  .lock-note.is-called { color: var(--text); border-color: var(--text); font-weight: 700; }
+  .race.called, .mrow.called { opacity: 0.6; }
   .late-chip { cursor: pointer; font: inherit; font-size: 13px; color: var(--text); }
   .late-chip[aria-pressed=true] { background: var(--Y); border-color: var(--Y); color: var(--on-pick); font-weight: 600; }
   .late-mark { font-size: 9px; color: var(--Y); font-weight: 700; margin-left: 2px; }
@@ -217,6 +223,7 @@
       <li><b>Deadlines:</b> each question is due when the first polls close in that state, with a 1-minute grace period. National questions are due at the first 7pm ET closings.
           You can still change a pick after its deadline, and it counts, but it's recorded as late. Every save is timestamped.
           The leaderboard is revealed once the last polls close.</li>
+      <li><b>Called races close:</b> once a race is called, its picks can't be changed any more.</li>
       <li>Nobody can see anyone else's picks until predictions close.</li>
     </ul>
   </section>
@@ -295,16 +302,42 @@ const lockTime = (t) => new Date(t).toLocaleString([], { timeStyle: "short" });
 
 // Label each question with its deadline; after it passes, changes are still allowed but count as late.
 function applyLocks() {
-  const label = (el, t, short) => {
+  // A small pill in the corner: "Due 5:00 PM" before the deadline, "Late" after (details on hover).
+  const label = (el, t) => {
     if (!el) return;
     const past = isLocked(t);
     el.classList.toggle("past", past);
-    el.textContent = past ? (short ? "Late now" : "Polls closed: changes now are recorded as late")
-                          : (short ? `Due ${lockTime(t)}` : `Due by ${lockTime(t)} (polls close)`);
+    el.textContent = past ? "Late" : `Due ${lockTime(t)}`;
+    el.title = past ? `Polls closed at ${lockTime(t)}. Changes still count but are recorded as late.`
+                    : `Due by ${lockTime(t)}, when polls close. Changes after that are recorded as late.`;
   };
-  for (const card of document.querySelectorAll(".race[data-race]")) label(card.querySelector(".lock-note"), raceById(card.dataset.race).locks_at);
-  label($("#seats-card .lock-note"), config.seats.locks_at);
-  for (const row of document.querySelectorAll(".mrow")) label(row.querySelector(".lock-note"), raceById(row.dataset.mrace).locks_at, true);
+  const called = new Set(config.called || []);
+  const close = (box, note, isCalled) => {
+    if (!box) return;
+    box.classList.toggle("called", isCalled);
+    box.querySelectorAll("input, select, button").forEach((i) => {
+      if (isCalled) i.disabled = true;
+      else if (i.dataset.wasCalled) i.disabled = false;
+      i.dataset.wasCalled = isCalled ? "1" : "";
+    });
+    if (isCalled && note) {
+      note.classList.remove("past");
+      note.classList.add("is-called");
+      note.textContent = "Called";
+      note.title = "This race has been called, so picks are closed.";
+    } else if (note) note.classList.remove("is-called");
+  };
+  for (const card of document.querySelectorAll(".race[data-race]")) {
+    const id = card.dataset.race;
+    if (!called.has(id)) label(card.querySelector(".lock-note"), raceById(id).locks_at);
+    close(card, card.querySelector(".lock-note"), called.has(id));
+    if (!called.has(id) && card.update) card.update(); // restores the slider's normal enabled/disabled state
+  }
+  const sc = $("#seats-card");
+  if (!called.has("SEATS")) label(sc && sc.querySelector(".lock-note"), config.seats.locks_at);
+  close(sc, sc && sc.querySelector(".lock-note"), called.has("SEATS"));
+  // Vote-share sliders stay open even after a race is called.
+  for (const row of document.querySelectorAll(".mrow")) label(row.querySelector(".lock-note"), raceById(row.dataset.mrace).locks_at);
 }
 const minPct = (r) => Math.round(r.min_confidence * 100);
 
@@ -1420,8 +1453,19 @@ function renderAdmin() {
     }
   }
   setupCharts();
-  setInterval(() => { if (!document.hidden) loadBoard().catch(() => {}); }, 60000);
-  if (location.hash.startsWith("#admin")) renderAdmin();
+  setInterval(() => {
+    if (document.hidden) return;
+    loadBoard().catch(() => {});
+    api("GET", "/api/config").then((c) => { config.called = c.called; applyLocks(); }).catch(() => {});
+  }, 60000);
+  // Open admin on load, or as soon as #admin is added to the URL in an already-open tab.
+  const openAdmin = () => {
+    if (!location.hash.startsWith("#admin")) return;
+    renderAdmin();
+    $("#admin").scrollIntoView({ behavior: "smooth" });
+  };
+  window.addEventListener("hashchange", openAdmin);
+  openAdmin();
   loadBoard()
     .then(() => { if (location.hash === "#votes") $("#votes").scrollIntoView(); })
     .catch((err) => showError($("#board"), err));

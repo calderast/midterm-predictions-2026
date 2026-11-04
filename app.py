@@ -207,6 +207,7 @@ def require_open():
 def public_config():
     closed = is_closed()
     with db() as conn:
+        called = called_questions(conn)
         results = get_results(conn) if closed else {}
         seat_result = get_seat_result(conn) if closed else None
         margin_results = get_margin_results(conn) if closed else {}
@@ -219,7 +220,32 @@ def public_config():
         "seats": {**CONFIG["seats"], "result": seat_result},
         "default_scoring": CONFIG.get("default_scoring", "log"),
         "margins": {**MARGIN_CFG, "races": MARGIN_RACES, "results": margin_results},
+        "called": sorted(called),
     }
+
+
+def called_questions(conn):
+    """Questions that have a result entered. They're closed: no more changes. (Who won stays hidden until the reveal.)"""
+    called = set(get_results(conn))
+    if get_seat_result(conn):
+        called.add("SEATS")
+    return called
+
+
+def keep_called(conn, preds, seats, margins, old_preds=None, old_seats=None, old_margins=None):
+    """Ignore changes to called questions' picks: keep whatever was saved before the call.
+    Vote shares stay editable (the final count takes a while anyway)."""
+    called = called_questions(conn)
+    old_preds, old_margins, margins = old_preds or {}, old_margins or {}, dict(margins or {})
+    for qid in called:
+        if qid == "SEATS":
+            seats = old_seats
+            continue
+        if qid in old_preds:
+            preds[qid] = old_preds[qid]
+        else:
+            preds.pop(qid, None)
+    return preds, seats, (margins or None)
 
 
 def entry_json(token, name, preds, seats, margins):
@@ -236,6 +262,7 @@ def create_entry(body):
     ts = now().isoformat()
     try:
         with db() as conn:
+            preds, seats, margins = keep_called(conn, preds, seats, margins)
             cur = conn.execute(
                 "INSERT INTO entries (token, name, predictions, seats, margins, created_at, updated_at)"
                 " VALUES (?,?,?,?,?,?,?)",
@@ -281,6 +308,9 @@ def update_entry(token, body):
     try:
         with db() as conn:
             row = load_entry(conn, token)
+            preds, seats, margins = keep_called(
+                conn, preds, seats, margins, json.loads(row["predictions"]),
+                json.loads(row["seats"] or "null"), json.loads(row["margins"] or "null"))
             ts = now().isoformat()
             conn.execute(
                 "UPDATE entries SET name = ?, predictions = ?, seats = ?, margins = ?, updated_at = ? WHERE token = ?",
