@@ -6,6 +6,9 @@
     "question": "How many Senate seats will each side hold after the election?",
     "note": "Count independents who caucus with Democrats as D. Currently 53 R – 47 D. Scored: an exact guess counts like a 99% correct call, and every 2 seats off halves it.",
     "total": 100,
+    "safe_D": 44,
+    "safe_R": 43,
+    "safe_note": "Seats not in this pool: D = 34 not up + ~10 safe D races up in 2026 (incl. NH); R = 31 not up + 12 safe R races.",
     "locks_at": "2026-11-04T00:00:00Z"
   },
   "default_scoring": "log",

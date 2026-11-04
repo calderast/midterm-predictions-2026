@@ -103,6 +103,9 @@
   .chart .dot.hl { fill: var(--I); r: 6px; }
   .chart .ref { fill: var(--text); stroke: var(--surface); stroke-width: 2; }
   .chart .consensus-tri { fill: var(--text); }
+  .chart .implied { stroke: var(--I); stroke-width: 2; }
+  .chart .implied-lbl { fill: var(--I); font-size: 11px; font-weight: 600; }
+  .chart .wash-none { fill: none; }
   .chart .consensus { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
   .chart .hit { fill: transparent; }
   .chart .wash-R, .chart .wash-D { stroke: none; }
@@ -799,10 +802,65 @@ function picksRows(qs, { crowd, entries, results }) {
 }
 
 
+// ----- consistency: what race picks imply for the Senate -----
+// Democratic seats implied by a set of race probabilities: seats not in the pool + P(D) in each D-vs-R race.
+// Osborn (I) in Nebraska doesn't count toward Democrats.
+const dRaces = () => config.races.filter((r) => r.group === "Senate" && r.candidates[0].party === "D");
+const pFirst = (p, r) => (!p ? null : p.pick === r.candidates[0].id ? p.confidence : 1 - p.confidence);
+function impliedD(preds) {
+  return (config.seats.safe_D || 0) + dRaces().reduce((t, r) => t + (pFirst(preds[r.id], r) ?? 0.5), 0);
+}
+function crowdImpliedD(src) {
+  return (config.seats.safe_D || 0) + dRaces().reduce((t, r) => {
+    const ps = src.crowd
+      ? (src.crowd.probs[r.id] || [])
+      : (src.entries || []).map((e) => pFirst(e.predictions[r.id], r)).filter((v) => v != null);
+    return t + (ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : 0.5);
+  }, 0);
+}
+// Races where someone's vote-share slider and their pick point to different winners.
+function marginMismatches(e) {
+  if (!e.margins) return [];
+  return marginRaces().filter((r) => {
+    const m = e.margins[r.id], p = e.predictions[r.id];
+    if (m == null || !p || p.confidence <= 0.5 || m === 50) return false;
+    return (m > 50) !== (p.pick === r.candidates[0].id);
+  });
+}
+
+// ----- closest race chart -----
+function closestChart(src) {
+  const q = raceById("CLOSEST");
+  if (!q) return "";
+  const picks = src.crowd
+    ? (src.crowd.closest || []).map(([pick, conf]) => ({ pick, conf }))
+    : (src.entries || []).filter((e) => e.predictions.CLOSEST).map((e) => ({ pick: e.predictions.CLOSEST.pick, conf: e.predictions.CLOSEST.confidence, name: e.name }));
+  if (!picks.length) return "";
+  const actual = src.results && src.results.CLOSEST;
+  const rows = q.candidates.map((c) => {
+    const ps = picks.filter((p) => p.pick === c.id);
+    if (!ps.length && c.id !== actual) return null;
+    const vs = ps.map((p) => p.conf * 100);
+    return {
+      n: ps.length, label: c.name + (c.id === actual ? " ◆" : ""), short: c.id + (c.id === actual ? "◆" : ""),
+      pts: ps.map((p) => ({ v: p.conf * 100, name: p.name, tip: `${p.name || "Someone"}: ${Math.round(p.conf * 100)}% that ${c.name} is the closest` })),
+      median: vs.length ? median(vs) : null, medianTip: vs.length ? `Median confidence on ${c.name}: ${median(vs).toFixed(0)}%` : "",
+    };
+  }).filter(Boolean).sort((a, b) => b.n - a.n);
+  return `
+    <div class="chart">
+      <h3>Closest race</h3>
+      <p class="sub">Which race each person thinks will be the closest, and how sure they are. Rows are sorted by popularity.
+        ${src.crowd ? "Anonymous until the reveal." : ""} ${actual ? "◆ marks the actual closest race." : ""}</p>
+      ${stripSVG(rows, chartWidth($("#board")), { lo: 0, hi: 100, mid: 0, washL: "wash-none", washR: "wash-none",
+                 leftLabel: "less sure", rightLabel: "more sure →", narrowLeft: "", narrowRight: "sure →" })}
+    </div>`;
+}
+
 // Senate balance: a dot histogram of predicted Democratic seats. Republicans hold the VP tiebreak,
 // so 51+ D seats is a Democratic majority. pts: [{ d, r, name? }]
-function seatsSVG(pts, W, actual) {
-  const vals = pts.map((p) => p.d).concat(actual ? [actual.D] : []);
+function seatsSVG(pts, W, actual, implied) {
+  const vals = pts.map((p) => p.d).concat(actual ? [actual.D] : []).concat(implied != null ? [Math.round(implied)] : []);
   const lo = Math.min(45, ...vals) - 1, hi = Math.max(55, ...vals) + 1, n = hi - lo + 1;
   const counts = {};
   pts.forEach((p) => (counts[p.d] = (counts[p.d] || 0) + 1));
@@ -822,7 +880,7 @@ function seatsSVG(pts, W, actual) {
   pts.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")).forEach((p) => {
     const k = (seen[p.d] = (seen[p.d] || 0) + 1);
     const cy = base - (k - 0.5) * dot, nm = p.name ? ` data-name="${attr(p.name)}"` : "";
-    const tip = `${p.name || "Someone"}: ${p.d} D – ${p.r} R`;
+    const tip = `${p.name || "Someone"}: ${p.d} D – ${p.r} R` + (p.implied != null ? ` · their race picks imply ~${p.implied.toFixed(1)} D` : "");
     g += `<circle class="dot"${nm} cx="${x(p.d)}" cy="${cy}" r="${Math.min(5, dot / 2 - 1)}"/>
           <circle class="hit"${nm} data-tip="${attr(tip)}" cx="${x(p.d)}" cy="${cy}" r="${dot / 2 + 2}"/>`;
   });
@@ -831,6 +889,12 @@ function seatsSVG(pts, W, actual) {
     g += `<line class="consensus" x1="${mx}" x2="${mx}" y1="${base + 2}" y2="${base + 4}"/>
           <path class="consensus-tri" d="M${mx} ${base + 1}L${mx + 5} ${base + 8}L${mx - 5} ${base + 8}Z"/>
           <rect class="hit" data-tip="${attr(`Group median: ${med} D seats`)}" x="${mx - 7}" y="${base}" width="14" height="10"/>`;
+  }
+  if (implied != null) {
+    const ix = m.l + (implied - lo + 0.5) * bw;
+    g += `<line class="implied" x1="${ix}" x2="${ix}" y1="${m.t}" y2="${base}"/>
+          <text class="implied-lbl" x="${ix + 4}" y="${m.t + 10}">race picks → ${implied.toFixed(1)}</text>
+          <rect class="hit" data-tip="${attr(`Adding up everyone's average chance in each race (plus ${config.seats.safe_D} seats not in play) gives ~${implied.toFixed(1)} Democratic seats`)}" x="${ix - 5}" y="${m.t}" width="10" height="${ph}"/>`;
   }
   if (actual) {
     const ax = x(actual.D), s = 6;
@@ -845,16 +909,19 @@ function seatsSVG(pts, W, actual) {
 function seatsChart(src) {
   const pts = src.crowd
     ? (src.crowd.seats || []).map(([d, r]) => ({ d, r }))
-    : (src.entries || []).filter((e) => e.seats).map((e) => ({ d: e.seats.D, r: e.seats.R, name: e.name }));
+    : (src.entries || []).filter((e) => e.seats).map((e) => ({ d: e.seats.D, r: e.seats.R, name: e.name, implied: impliedD(e.predictions) }));
   if (!pts.length) return "";
   const actual = src.crowd ? null : lastBoard && lastBoard.seat_result;
   const dCtrl = pts.filter((p) => p.d >= 51).length;
+  const implied = crowdImpliedD(src);
   return `
     <div class="chart">
       <h3>Senate balance</h3>
       <p class="sub">Predicted Democratic seats. Each dot is one person${src.crowd ? ", anonymous until the reveal" : ""}.
-        ${dCtrl} of ${pts.length} expect a Democratic majority. ▲ group median ${actual ? `· ${keyActual}` : ""}</p>
-      ${seatsSVG(pts, chartWidth($("#board")), actual)}
+        ${dCtrl} of ${pts.length} expect a Democratic majority. ▲ group median ·
+        <span class="key"><svg width="6" height="14"><line x1="3" x2="3" y1="1" y2="13" stroke="var(--I)" stroke-width="2"/></svg>what the crowd's race-by-race picks add up to (~${implied.toFixed(1)} D)</span>
+        ${actual ? `· ${keyActual}` : ""}</p>
+      ${seatsSVG(pts, chartWidth($("#board")), actual, implied)}
     </div>`;
 }
 
@@ -863,6 +930,7 @@ function picksCharts(src) {
   const anon = src.crowd ? " Anonymous until the reveal." : "";
   const key = `${keyDot}${src.crowd ? "one person" : "one person (hover or tap)"}</span> ${keyMedian} ${src.results ? keyActual : ""}`;
   let html = seatsChart(src);
+  const closestHtml = closestChart(src);
   const national = picksRows(config.races.filter((r) => r.group === "House" || r.group === "Senate"), src);
   if (national.length) html += `
     <div class="chart">
@@ -878,6 +946,7 @@ function picksCharts(src) {
       ${stripSVG(local, W, { lo: 0, hi: 100, mid: 50, washL: "wash-Y", washR: "wash-X", labelWidth: 150,
                              leftLabel: "← No / Chan favored", rightLabel: "Yes / Wiener favored →", narrowLeft: "← No/Chan", narrowRight: "Yes/Wiener →" })}
     </div>`;
+  html += closestHtml;
   return html;
 }
 
@@ -1158,6 +1227,37 @@ function pickAwards(entries, results) {
     if (contra) out.push({ emoji: "🦄", title: "Contrarian", who: nameList(contra.winners), detail: `Went against the crowd on ${contra.v} question${contra.v === 1 ? "" : "s"}` });
     const herd = bestOf(stats.filter((s) => s.avgConf != null), (s) => against(s.e), "min");
     if (herd && contra && herd.v < contra.v) out.push({ emoji: "🐑", title: "Herd animal", who: nameList(herd.winners), detail: herd.v ? `Only broke from the crowd ${herd.v} time${herd.v === 1 ? "" : "s"}` : "Never once broke from the crowd" });
+  }
+
+  // Do their seat count and race picks agree?
+  const seatPeople = entries.filter((e) => e.seats && dRaces().some((r) => e.predictions[r.id]));
+  if (seatPeople.length) {
+    const gap = (e) => Math.abs(e.seats.D - impliedD(e.predictions));
+    const off = bestOf(seatPeople, gap, "max", 2);
+    if (off) {
+      const e = off.winners[0];
+      out.push({ emoji: "🧮", title: "Math doesn't add up", who: nameList(off.winners),
+                 detail: `Predicted ${e.seats.D} D seats, but their race picks add up to ~${impliedD(e.predictions).toFixed(1)}` });
+    }
+    const tight = bestOf(seatPeople, gap, "min", 1);
+    if (tight && (!off || tight.v < off.v)) out.push({ emoji: "📐", title: "Spreadsheet brain", who: nameList(tight.winners),
+                 detail: `Seat count matches their race picks within ${tight.v.toFixed(1)} seats` });
+  }
+  const split = bestOf(entries.filter((e) => e.margins), (e) => marginMismatches(e).length, "max", 1);
+  if (split) {
+    const races = marginMismatches(split.winners[0]).map((r) => r.short || r.id).join(", ");
+    out.push({ emoji: "🙃", title: "Split personality", who: nameList(split.winners),
+               detail: `Vote share and pick point to different winners in ${split.v} race${split.v === 1 ? "" : "s"} (${races})` });
+  }
+
+  // Left room in the Senate for someone who isn't a D or an R (hi, Dan Osborn).
+  const indies = entries.filter((e) => e.seats && e.seats.D + e.seats.R < config.seats.total);
+  if (indies.length) {
+    const left = (e) => config.seats.total - e.seats.D - e.seats.R;
+    const most = Math.max(...indies.map(left));
+    out.push({ emoji: "🦅", title: "Strong independent", who: nameList(indies),
+               detail: most === 1 ? "Saved a Senate seat for neither party. Osborn, is that you?"
+                                  : `Saved up to ${most} Senate seats for neither party` });
   }
 
   // Seat count extremes.

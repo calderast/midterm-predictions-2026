@@ -310,6 +310,8 @@ def crowd_summary(rows):
         "probs": {k: sorted(round(v, 2) for v in vs) for k, vs in probs.items()},
         "margins": {k: sorted(vs) for k, vs in margins.items()},
         "seats": sorted([s["D"], s["R"]] for s in (json.loads(r["seats"] or "null") for r in rows) if s),
+        "closest": sorted([p["CLOSEST"]["pick"], p["CLOSEST"]["confidence"]]
+                          for p in (json.loads(r["predictions"]) for r in rows) if "CLOSEST" in p),
     }
 
 
