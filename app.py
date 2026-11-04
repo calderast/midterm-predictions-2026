@@ -394,14 +394,35 @@ def leaderboard():
             "margin_results": margin_results, "entries": on_time, "entries_with_late": latest}
 
 
-def set_results(headers, body):
+def check_admin(headers):
     if not ADMIN_TOKEN:
         raise ApiError(403, "Admin is disabled (start the server with ADMIN_TOKEN set)")
     auth = headers.get("Authorization", "")
     if not secrets.compare_digest(auth.encode(), f"Bearer {ADMIN_TOKEN}".encode()):
         raise ApiError(401, "Bad admin token")
-    if not is_closed():
-        raise ApiError(403, "Predictions are still open; results can be entered after close")
+
+
+def admin_results(headers):
+    check_admin(headers)
+    with db() as conn:
+        return {"results": get_results(conn), "seats": get_seat_result(conn), "margins": get_margin_results(conn)}
+
+
+def rotate_token(headers, body):
+    """Give an entry a new private edit link (e.g. if the old one leaked). The old link stops working."""
+    check_admin(headers)
+    name = clean_name(body.get("name"))
+    token = secrets.token_urlsafe(16)
+    with db() as conn:
+        cur = conn.execute("UPDATE entries SET token = ? WHERE name = ?", (token, name))
+        if cur.rowcount == 0:
+            raise ApiError(404, f"No entry named {name!r}")
+    return {"name": name, "token": token, "edit_path": f"/?entry={token}"}
+
+
+def set_results(headers, body):
+    # Races can be called any time; results stay hidden from everyone else until the pool closes.
+    check_admin(headers)
     results = body.get("results", {})
     if not isinstance(results, dict):
         raise ApiError(400, "results must be an object")
@@ -463,6 +484,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(200, get_entry(token))
                 if method == "PUT":
                     return self.send_json(200, update_entry(token, self.read_json()))
+            if method == "GET" and path == "/api/admin/results":
+                return self.send_json(200, admin_results(self.headers))
+            if method == "POST" and path == "/api/admin/rotate":
+                return self.send_json(200, rotate_token(self.headers, self.read_json()))
             if method == "POST" and path == "/api/admin/results":
                 return self.send_json(200, set_results(self.headers, self.read_json()))
             raise ApiError(404, "Not found")

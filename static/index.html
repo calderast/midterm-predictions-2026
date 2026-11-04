@@ -1324,39 +1324,66 @@ function renderSuperlatives() {
 
 // ---------- admin ----------
 function renderAdmin() {
+  // A bookmark like /#admin=TOKEN signs this device in: remember the token, then hide it from the address bar.
+  const m = location.hash.match(/^#admin=(.+)$/);
+  if (m) {
+    store.set("adminToken", decodeURIComponent(m[1]));
+    history.replaceState(null, "", location.pathname + location.search + "#admin");
+  }
   $("#admin").hidden = false;
-  $("#admin-token").value = store.get("adminToken") || "";
+  const tokenInput = $("#admin-token");
+  tokenInput.value = store.get("adminToken") || "";
   $("#admin-races").innerHTML = config.races.map((r) => `
     <label class="card" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span>${esc(r.state)}</span>
       <select data-race="${esc(r.id)}">
         <option value="">Not called</option>
-        ${r.candidates.map((c) => `<option value="${esc(c.id)}" ${r.winner === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+        ${r.candidates.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}
       </select>
     </label>`).join("");
-  $("#admin-margins").innerHTML = marginRaces().map((r) => {
-    const v = config.margins.results[r.id];
-    return `<label class="card" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+  $("#admin-margins").innerHTML = marginRaces().map((r) => `
+    <label class="card" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span>${esc(r.state)}</span>
-      <input type="number" data-mrace="${esc(r.id)}" min="0" max="100" step="0.1" style="width:80px" value="${v == null ? "" : v}">
-    </label>`;
-  }).join("");
-  if (config.seats.result) {
-    $("#admin-seats-D").value = config.seats.result.D;
-    $("#admin-seats-R").value = config.seats.result.R;
+      <input type="number" data-mrace="${esc(r.id)}" min="0" max="100" step="0.1" style="width:80px">
+    </label>`).join("");
+
+  const bookmark = (t) => `${location.origin}${location.pathname}#admin=${encodeURIComponent(t)}`;
+  const signedIn = (t, n) => `<div class="notice">Signed in on this device. ${n} question${n === 1 ? "" : "s"} called so far.
+      To skip the token next time, bookmark <a href="${esc(bookmark(t))}">this admin link</a>. Keep it private: it has your token in it.</div>`;
+
+  // Load what's already been entered, so the form shows current results.
+  async function loadAdmin() {
+    const t = tokenInput.value.trim();
+    if (!t) return;
+    try {
+      const cur = await api("GET", "/api/admin/results", undefined, { Authorization: `Bearer ${t}` });
+      store.set("adminToken", t);
+      document.querySelectorAll("#admin-races select").forEach((sel) => (sel.value = cur.results[sel.dataset.race] || ""));
+      document.querySelectorAll("#admin-margins input").forEach((i) => (i.value = cur.margins[i.dataset.mrace] ?? ""));
+      $("#admin-seats-D").value = cur.seats ? cur.seats.D : "";
+      $("#admin-seats-R").value = cur.seats ? cur.seats.R : "";
+      $("#admin-msg").innerHTML = signedIn(t, Object.keys(cur.results).length);
+    } catch (err) {
+      showError($("#admin-msg"), err);
+    }
   }
+  tokenInput.addEventListener("change", loadAdmin);
+  loadAdmin();
+
   $("#admin-save").onclick = async () => {
     const results = {};
-    document.querySelectorAll("#admin-races select").forEach((s) => (results[s.dataset.race] = s.value || null));
+    document.querySelectorAll("#admin-races select").forEach((sel) => (results[sel.dataset.race] = sel.value || null));
     const d = $("#admin-seats-D").value, r = $("#admin-seats-R").value;
     const seats = d === "" || r === "" ? null : { D: Number(d), R: Number(r) };
     const margins = {};
     document.querySelectorAll("#admin-margins input").forEach((i) => (margins[i.dataset.mrace] = i.value === "" ? null : Number(i.value)));
-    const t = $("#admin-token").value;
+    const t = tokenInput.value.trim();
     try {
-      await api("POST", "/api/admin/results", { results, seats, margins }, { Authorization: `Bearer ${t}` });
+      const saved = await api("POST", "/api/admin/results", { results, seats, margins }, { Authorization: `Bearer ${t}` });
       store.set("adminToken", t);
-      $("#admin-msg").innerHTML = `<div class="notice">Results saved.</div>`;
+      const n = Object.keys(saved.results).length;
+      $("#admin-msg").innerHTML = `<div class="notice">Saved at ${new Date().toLocaleTimeString([], { timeStyle: "short" })}. ${n} question${n === 1 ? "" : "s"} called.
+        ${config.closed ? "" : "Results stay hidden from everyone else until the reveal."}</div>`;
       loadBoard();
     } catch (err) {
       showError($("#admin-msg"), err);
@@ -1394,7 +1421,7 @@ function renderAdmin() {
   }
   setupCharts();
   setInterval(() => { if (!document.hidden) loadBoard().catch(() => {}); }, 60000);
-  if (location.hash === "#admin") renderAdmin();
+  if (location.hash.startsWith("#admin")) renderAdmin();
   loadBoard()
     .then(() => { if (location.hash === "#votes") $("#votes").scrollIntoView(); })
     .catch((err) => showError($("#board"), err));

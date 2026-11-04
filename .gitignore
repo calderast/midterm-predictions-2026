@@ -1,3 +1,4 @@
 data.db
 __pycache__/
 exports/
+seed.db
