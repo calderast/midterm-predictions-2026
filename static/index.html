@@ -117,6 +117,13 @@
   .mhead .lock-note { margin: 0; }
   .lock-note.past { color: var(--Y); font-weight: 600; }
   .late-mark { font-size: 9px; color: var(--Y); font-weight: 700; margin-left: 2px; }
+  .awards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .award { display: flex; gap: 12px; align-items: flex-start; background: var(--surface); border: 1px solid var(--border);
+           border-radius: 10px; padding: 12px 14px; }
+  .award-emoji { font-size: 26px; line-height: 1; }
+  .award-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+  .award-who { font-size: 16px; font-weight: 700; margin: 2px 0; }
+  .award-detail { font-size: 13px; color: var(--muted); }
   .how p, .how li { color: var(--muted); max-width: 680px; }
   [hidden] { display: none !important; }
 </style>
@@ -173,6 +180,8 @@
   <section>
     <h2>Leaderboard</h2>
     <div id="board" class="muted">Loading…</div>
+    <h3 class="group-heading">Superlatives</h3>
+    <div id="superlatives"></div>
     <h3 class="group-heading" id="votes">Bonus: vote share</h3>
     <div id="margin-board"></div>
   </section>
@@ -484,6 +493,7 @@ function wireLateToggle(root) {
     includeLate = b.dataset.late === "1";
     renderBoard();
     renderMarginBoard();
+    renderSuperlatives();
   }));
 }
 let lastBoard = null;
@@ -492,6 +502,7 @@ async function loadBoard() {
   lastBoard = await api("GET", "/api/leaderboard");
   renderBoard();
   renderMarginBoard();
+  renderSuperlatives();
 }
 
 function renderBoard() {
@@ -930,6 +941,153 @@ function wireHover(root) {
   root.addEventListener("click", show);
   window.addEventListener("scroll", () => (tip.hidden = true), { passive: true });
   root.addEventListener("mouseleave", () => { tip.hidden = true; highlight(null); });
+}
+
+// ---------- superlatives ----------
+// Behavior-only awards (no picks revealed) before the reveal; the full set after.
+// threshold (optional): for "max", the best must be >= it; for "min", <= it.
+function bestOf(items, value, dir = "max", threshold) {
+  const vals = items.map((it) => ({ it, v: value(it) })).filter((x) => x.v != null && Number.isFinite(x.v));
+  if (!vals.length) return null;
+  const best = dir === "max" ? Math.max(...vals.map((x) => x.v)) : Math.min(...vals.map((x) => x.v));
+  if (threshold != null && (dir === "max" ? best < threshold : best > threshold)) return null;
+  const winners = vals.filter((x) => Math.abs(x.v - best) < 1e-9).map((x) => x.it);
+  if (vals.length > 1 && winners.length === vals.length) return null; // everyone tied: not much of an award
+  return { winners, v: best };
+}
+
+const nameList = (ws) => {
+  const names = ws.map((w) => w.name);
+  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+};
+const clock = (ts) => new Date(ts).toLocaleTimeString([], { timeStyle: "short" });
+
+function behaviorAwards(meta) {
+  if (!meta || meta.length < 2) return [];
+  const out = [];
+  const early = bestOf(meta, (m) => +new Date(m.first_saved), "min");
+  if (early) out.push({ emoji: "🐦", title: "Early bird", who: nameList(early.winners), detail: `First in, at ${clock(early.winners[0].first_saved)}` });
+  const late = bestOf(meta, (m) => +new Date(m.first_saved), "max");
+  if (late) out.push({ emoji: "⏰", title: "Procrastinator", who: nameList(late.winners), detail: `Showed up at ${clock(late.winners[0].first_saved)}` });
+  const edits = bestOf(meta, (m) => m.saves, "max", 3);
+  if (edits) out.push({ emoji: "✏️", title: "Can't stop tinkering", who: nameList(edits.winners), detail: `Saved ${edits.v} times` });
+  const sel = bestOf(meta, (m) => m.answered, "min");
+  const total = config.races.length;
+  if (sel && sel.v < total) out.push({ emoji: "🧐", title: "Most selective", who: nameList(sel.winners), detail: `Only answered ${sel.v} of ${total} questions` });
+  const all = meta.filter((m) => m.answered === total);
+  if (all.length) out.push({ emoji: "📚", title: "Completionist", who: nameList(all), detail: `Answered all ${total} questions` });
+  return out;
+}
+
+function pickAwards(entries, results) {
+  const binary = config.races.filter((r) => r.candidates.length === 2);
+  const partisan = config.races.filter((r) => r.group === "Senate" || r.group === "House");
+  const out = [];
+  const stats = entries.map((e) => {
+    const answered = binary.filter((r) => e.predictions[r.id]);
+    const confs = answered.map((r) => e.predictions[r.id].confidence);
+    const pFirst = partisan.filter((r) => e.predictions[r.id]).map((r) => {
+      const p = e.predictions[r.id];
+      return p.pick === r.candidates[0].id ? p.confidence : 1 - p.confidence;
+    });
+    return {
+      name: e.name, e,
+      avgConf: confs.length >= 3 ? confs.reduce((a, b) => a + b, 0) / confs.length : null,
+      flips: answered.filter((r) => e.predictions[r.id].confidence <= 0.5).length,
+      sure: answered.filter((r) => e.predictions[r.id].confidence >= 0.95).length,
+      blue: pFirst.length >= 3 ? pFirst.reduce((a, b) => a + b, 0) / pFirst.length : null,
+    };
+  });
+
+  const conf = bestOf(stats, (s) => s.avgConf, "max");
+  if (conf) out.push({ emoji: "🔥", title: "Most confident", who: nameList(conf.winners), detail: `Average confidence ${Math.round(conf.v * 100)}%` });
+  const hedge = bestOf(stats, (s) => s.avgConf, "min");
+  if (hedge && conf && hedge.v < conf.v) out.push({ emoji: "🤷", title: "Fence sitter", who: nameList(hedge.winners), detail: `Average confidence ${Math.round(hedge.v * 100)}%` });
+  const sure = bestOf(stats, (s) => s.sure, "max", 3);
+  if (sure) out.push({ emoji: "💯", title: "No doubt about it", who: nameList(sure.winners), detail: `${sure.v} picks at 95% or higher` });
+  const flips = bestOf(stats, (s) => s.flips, "max", 2);
+  if (flips) out.push({ emoji: "🪙", title: "Coin flipper", who: nameList(flips.winners), detail: `${flips.v} picks at a straight 50%` });
+  const blue = bestOf(stats, (s) => s.blue, "max");
+  if (blue) out.push({ emoji: "🌊", title: "Blue-wave believer", who: nameList(blue.winners), detail: `Average ${Math.round(blue.v * 100)}% chance for Democrats (or Osborn) across House + Senate` });
+  const red = bestOf(stats, (s) => s.blue, "min");
+  if (red && blue && red.v < blue.v) out.push({ emoji: "🐘", title: "Red-wall builder", who: nameList(red.winners), detail: `Average ${Math.round((1 - red.v) * 100)}% chance for Republicans across House + Senate` });
+
+  // Contrarian / herd: picks against the group's majority pick on each question.
+  const majority = {};
+  for (const r of binary) {
+    const counts = {};
+    entries.forEach((e) => { const p = e.predictions[r.id]; if (p && p.confidence > 0.5) counts[p.pick] = (counts[p.pick] || 0) + 1; });
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (sorted.length && (sorted.length === 1 || sorted[0][1] > sorted[1][1])) majority[r.id] = sorted[0][0];
+  }
+  const against = (e) => Object.keys(majority).filter((q) => e.predictions[q] && e.predictions[q].confidence > 0.5 && e.predictions[q].pick !== majority[q]).length;
+  if (entries.length >= 3) {
+    const contra = bestOf(stats, (s) => against(s.e), "max", 1);
+    if (contra) out.push({ emoji: "🦄", title: "Contrarian", who: nameList(contra.winners), detail: `Went against the crowd on ${contra.v} question${contra.v === 1 ? "" : "s"}` });
+    const herd = bestOf(stats.filter((s) => s.avgConf != null), (s) => against(s.e), "min");
+    if (herd && contra && herd.v < contra.v) out.push({ emoji: "🐑", title: "Herd animal", who: nameList(herd.winners), detail: herd.v ? `Only broke from the crowd ${herd.v} time${herd.v === 1 ? "" : "s"}` : "Never once broke from the crowd" });
+  }
+
+  // Seat count extremes.
+  const withSeats = entries.filter((e) => e.seats);
+  if (withSeats.length >= 2) {
+    const optD = bestOf(withSeats, (e) => e.seats.D, "max");
+    const optR = bestOf(withSeats, (e) => e.seats.R, "max");
+    if (optD) out.push({ emoji: "🔵", title: "Dreaming blue", who: nameList(optD.winners), detail: `Predicted ${optD.v} Democratic Senate seats` });
+    if (optR) out.push({ emoji: "🔴", title: "Dreaming red", who: nameList(optR.winners), detail: `Predicted ${optR.v} Republican Senate seats` });
+  }
+
+  // Vote-share personality.
+  const withM = entries.filter((e) => e.margins && Object.keys(e.margins).length >= 3);
+  if (withM.length >= 2) {
+    const spread = (e) => { const v = Object.values(e.margins); return v.reduce((a, x) => a + Math.abs(x - 50), 0) / v.length; };
+    const land = bestOf(withM, spread, "max"), nail = bestOf(withM, spread, "min");
+    if (land) out.push({ emoji: "🏔️", title: "Landslide caller", who: nameList(land.winners), detail: `Average predicted margin ${(2 * land.v).toFixed(1)} points` });
+    if (nail && land && nail.v < land.v) out.push({ emoji: "😬", title: "Nail-biter", who: nameList(nail.winners), detail: `Average predicted margin just ${(2 * nail.v).toFixed(1)} points` });
+  }
+
+  // Result-based awards.
+  const called = binary.filter((r) => results[r.id]);
+  if (called.length) {
+    let worst = null;
+    for (const e of entries) for (const r of called) {
+      const p = e.predictions[r.id];
+      if (p && p.pick !== results[r.id] && p.confidence > 0.5 && (!worst || p.confidence > worst.conf)) worst = { e, r, conf: p.confidence, pick: p.pick };
+    }
+    if (worst) {
+      const c = candById(worst.r, worst.pick);
+      out.unshift({ emoji: "💥", title: "Most confidently wrong", who: worst.e.name, detail: `${Math.round(worst.conf * 100)}% on ${c.name} in ${worst.r.state}. Oof.` });
+    }
+    const hits = (e) => called.filter((r) => e.predictions[r.id] && e.predictions[r.id].confidence > 0.5 && e.predictions[r.id].pick === results[r.id]).length;
+    const sharp = bestOf(entries, hits, "max", 1);
+    if (sharp) out.unshift({ emoji: "🎯", title: "Sharpshooter", who: nameList(sharp.winners), detail: `${sharp.v} of ${called.length} called questions right` });
+    // Bravest correct call: the most confident correct pick that went against the crowd.
+    let brave = null;
+    for (const e of entries) for (const r of called) {
+      const p = e.predictions[r.id];
+      if (p && p.pick === results[r.id] && majority[r.id] && p.pick !== majority[r.id] && (!brave || p.confidence > brave.conf)) brave = { e, r, conf: p.confidence, pick: p.pick };
+    }
+    if (brave) out.unshift({ emoji: "🦁", title: "Bravest call", who: brave.e.name, detail: `Bucked the crowd at ${Math.round(brave.conf * 100)}% on ${candById(brave.r, brave.pick).name} in ${brave.r.state}, and was right` });
+  }
+  return out;
+}
+
+function renderSuperlatives() {
+  const el = $("#superlatives");
+  if (!el || !lastBoard) return;
+  const awards = lastBoard.closed
+    ? [...pickAwards(boardEntries(), lastBoard.results || {}), ...behaviorAwards(lastBoard.meta)]
+    : behaviorAwards(lastBoard.meta);
+  const note = lastBoard.closed ? "" : `<p class="muted">More awards unlock when picks are revealed: most confident, most confidently wrong, contrarian, blue-wave believer and more.</p>`;
+  el.innerHTML = awards.length
+    ? `${note}<div class="awards">${awards.map((a) => `
+        <div class="award">
+          <div class="award-emoji" aria-hidden="true">${a.emoji}</div>
+          <div><div class="award-title">${esc(a.title)}</div>
+          <div class="award-who">${esc(a.who)}</div>
+          <div class="award-detail">${esc(a.detail)}</div></div>
+        </div>`).join("")}</div>`
+    : `<p class="muted">Awards show up once a couple of people have entered.</p>`;
 }
 
 // ---------- admin ----------

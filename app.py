@@ -349,10 +349,15 @@ def leaderboard():
             late.append("SEATS")
         return (on_p, on_s, on_m or None), (cur_p, cur_s, cur_m or None), late
 
+    # Behavior only (no picks): safe to show before the reveal, used for superlatives.
+    meta = [{"name": r["name"], "first_saved": r["created_at"], "last_saved": r["updated_at"],
+             "saves": len(by_entry.get(r["id"], [])) or 1, "answered": len(json.loads(r["predictions"]))}
+            for r in rows]
+
     if not is_closed():
         # Keep everyone's picks private until the pool closes.
         late_names = [r["name"] for r in rows if snapshots(r)[2]]
-        out = {"closed": False, "entrants": [r["name"] for r in rows], "late": late_names}
+        out = {"closed": False, "entrants": [r["name"] for r in rows], "late": late_names, "meta": meta}
         if CONFIG.get("crowd_preview", True):
             out["crowd"] = crowd_summary(rows)
         return out
@@ -377,7 +382,7 @@ def leaderboard():
     key = lambda e: (-e["total"], e["brier"] if e["brier"] is not None else 1, e["name"].lower())
     latest.sort(key=key)
     on_time.sort(key=key)
-    return {"closed": True, "results": results, "seat_result": seat_result,
+    return {"closed": True, "results": results, "seat_result": seat_result, "meta": meta,
             "margin_results": margin_results, "entries": on_time, "entries_with_late": latest}
 
 
